@@ -1,0 +1,1062 @@
+syntax = "proto3";
+
+package processor;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "service/common/protos/common.proto";
+
+option go_package = "sentioxyz/sentio/processor/protos";
+
+service Processor {
+  // Start the processor, need to be called before any other RPC calls
+  rpc Start(StartRequest) returns (google.protobuf.Empty);
+  // Stop the processor
+  rpc Stop(google.protobuf.Empty) returns (google.protobuf.Empty);
+  // Get configs of processor, it will be updated automatically if new contracts is added
+  // during log processing
+  rpc GetConfig(ProcessConfigRequest) returns (ProcessConfigResponse);
+
+  // Process data binding
+  rpc ProcessBindings(ProcessBindingsRequest) returns (ProcessBindingResponse);
+
+  rpc ProcessBindingsStream(stream ProcessStreamRequest) returns (stream ProcessStreamResponse);
+
+  rpc PreprocessBindingsStream(stream PreprocessStreamRequest) returns (stream PreprocessStreamResponse);
+}
+
+service ProcessorV3 {
+  // Initially call once to confirm which chains are available
+  rpc Init(google.protobuf.Empty) returns (InitResponse);
+
+  // It will be called multiple times to tell the specified chain which templates are there and return
+  // the handler configuration of this chain.
+  // There is a special requirement that different chains must have different handler id sequences,
+  // otherwise templates cannot be added midway. Whether it is a new template can also be determined by the driver.
+  rpc ConfigureHandlers(ConfigureHandlersRequest) returns (ConfigureHandlersResponse);
+
+  rpc ProcessBindingsStream(stream ProcessStreamRequest) returns (stream ProcessStreamResponseV2);
+}
+
+message ProjectConfig {
+  string name = 1;
+  string version = 3;
+}
+
+message ExecutionConfig {
+  // By default, the processor will run handlers  in parallel, but in some cases, we want to process the data
+  // sequentially, e.g. read the data from the database, then process the data, then write the data back to the database
+  bool sequential = 1;
+  bool forceExactBlockTime = 2;
+  int32 processBindingTimeout = 3;
+  // By default, the processor will try to locate the start block of the contract even user provided one,
+  // but in case that nodes are pruned so it can't be correctly located, this flag will force the processor to start
+  // from user specified block
+  bool skipStartBlockValidation = 4;
+  int32 rpcRetryTimes = 5;
+  optional DecoderWorkerConfig ethAbiDecoderConfig = 6;
+  message DecoderWorkerConfig {
+    bool enabled = 1;
+    optional int32 worker_count = 2;
+    optional bool skip_when_decode_failed = 3;
+  }
+}
+
+message ProcessConfigRequest {
+}
+
+message ProcessConfigResponse {
+  ProjectConfig config = 1;
+  ExecutionConfig execution_config = 9;
+  repeated ContractConfig contract_configs = 2;
+  repeated TemplateInstance template_instances = 3;
+
+  repeated AccountConfig account_configs = 4;
+
+  repeated MetricConfig metric_configs = 5;
+  repeated EventTrackingConfig event_tracking_configs = 6;
+  repeated ExportConfig export_configs = 7;
+  repeated EventLogConfig event_log_configs = 8;
+
+  DataBaseSchema db_schema = 10;
+}
+
+message ConfigureHandlersResponse {
+  repeated ContractConfig contract_configs = 2;
+  repeated AccountConfig account_configs = 4;
+}
+
+message ContractConfig {
+  ContractInfo contract = 1;
+  repeated OnIntervalConfig interval_configs = 11;
+  repeated MoveOnIntervalConfig move_interval_configs = 19;
+
+  repeated LogHandlerConfig log_configs = 3;
+  repeated TraceHandlerConfig trace_configs = 2;
+  repeated TransactionHandlerConfig transaction_config = 7;
+  repeated MoveEventHandlerConfig move_event_configs = 9;
+  repeated MoveCallHandlerConfig move_call_configs = 10;
+  repeated MoveResourceChangeConfig move_resource_change_configs = 12;
+  repeated FuelCallHandlerConfig fuel_call_configs = 13 [deprecated = true];
+  repeated FuelTransactionHandlerConfig fuel_transaction_configs = 20;
+  repeated FuelAssetHandlerConfig asset_configs = 14;
+  repeated FuelLogHandlerConfig fuel_log_configs = 15 [deprecated = true];
+  repeated FuelReceiptHandlerConfig fuel_receipt_configs = 21;
+  repeated CosmosLogHandlerConfig cosmos_log_configs = 16;
+  repeated StarknetEventHandlerConfig starknet_event_configs = 17;
+  repeated BTCTransactionHandlerConfig btc_transaction_configs = 18;
+
+  InstructionHandlerConfig instruction_config = 6;
+  uint64 start_block = 4;
+  uint64 end_block = 5;
+  string processor_type = 8;
+
+}
+
+message DataBaseSchema {
+  string gql_schema = 1;
+}
+
+message TotalPerEntityAggregation {
+  enum Type {
+    AVG = 0;
+    MEDIAN = 1;
+    // add more
+  }
+}
+
+message RetentionConfig {
+  string retention_event_name = 2;
+  int32 days = 3;
+}
+
+message EventTrackingConfig {
+  string event_name = 1;
+  bool total_by_day = 2;
+  bool unique = 3;
+  TotalPerEntityAggregation total_per_entity = 4;
+  repeated int32 distinct_aggregation_by_days = 5;
+  RetentionConfig retention_config = 6;
+}
+
+message ExportConfig {
+  string name = 1;
+  string channel = 2;
+}
+
+enum MetricType {
+  UNKNOWN_TYPE = 0;
+  COUNTER = 1;
+  GAUGE = 2;
+  HISTOGRAM = 3;
+}
+
+message MetricConfig {
+  string name = 1;
+  string description = 3;
+  string unit = 2;
+  bool sparse = 4;
+  // by default metric value get recalculated for each run, but in same cases we want to just continue the metric
+  // from the previous version, e.g. the blockchain is heavily pruned so it can't be recalculated from the beginning
+  bool persistent_between_version = 5;
+
+  MetricType type = 7;
+  AggregationConfig aggregation_config = 6;
+}
+
+message EventLogConfig {
+  // numbers are by default using big integer, if has decimal, use big decimal
+  enum BasicFieldType {
+    STRING = 0;
+    DOUBLE = 1; // to support
+    BOOL = 2;
+    TIMESTAMP = 3;
+    BIG_INTEGER = 4; // 256 bit integer
+    BIG_DECIMAL = 5; // 244 bit integer, 12 bit decimal
+  }
+
+  message StructFieldType {
+    repeated Field fields = 2;
+  }
+
+  message Field {
+    string name = 1;
+    oneof type {
+      BasicFieldType basic_type = 2;
+      common.CoinID coin_type = 3;
+      StructFieldType struct_type = 4;
+    };
+  }
+
+  string name = 1;
+  repeated Field fields = 2;
+}
+
+/*
+  Config to aggregate multiple data points into new data points in a constant time interval.
+  e.g. if you have a metric called 'vol', use 1 minutes interval and [SUM, AVG] aggregation type,
+  then every minutes there will be a 'vol_sum' and 'vol_avg' metric.
+
+  Currently this apply to gauge only.
+ */
+message AggregationConfig {
+  /*
+    The interval for data point to be resolved.
+    The minimal value is 1, and the max value allowed is 24*60 (1 day)
+   */
+  repeated int32 interval_in_minutes = 1;
+  /*
+    What aggregations to be done for the data points.
+   */
+  repeated AggregationType types = 2;
+  /*
+    Whether to discard original data points, default to be false.r
+   */
+  bool discard_origin = 3;
+}
+
+enum AggregationType {
+  COUNT = 0;
+  SUM = 1;
+  AVG = 2;
+  MIN = 3;
+  MAX = 4;
+  LAST = 5;
+  //  P50 = 5;
+  //  P99 = 6;
+  //  P99_9 = 7;
+}
+
+message AccountConfig {
+  // TODO implement account configs
+  string chain_id = 1;
+  string address = 2;
+  uint64 start_block = 3;
+  uint64 end_block = 10;
+  repeated OnIntervalConfig interval_configs = 4;
+  repeated AptosOnIntervalConfig aptos_interval_configs = 5 [deprecated = true];
+  // TODO migrate aptos_interval_configs to move_interval_configs
+  repeated MoveOnIntervalConfig move_interval_configs = 7;
+  repeated MoveCallHandlerConfig move_call_configs = 8;
+  repeated MoveResourceChangeConfig move_resource_change_configs = 9;
+
+  // TODO add tx handler config related to the account
+
+  repeated LogHandlerConfig log_configs = 6;
+}
+
+message HandleInterval {
+  int32 recent_interval = 1;
+  int32 backfill_interval = 2;
+}
+
+message OnIntervalConfig {
+  int32 handler_id = 1;
+  // num of minutes, there can be either minutes or slot
+  int32 minutes = 2;
+  optional HandleInterval minutes_interval = 4;
+
+  // block or version
+  int32 slot = 3;
+  optional HandleInterval slot_interval = 5;
+
+  // eth fetch config
+  EthFetchConfig fetch_config = 6;
+
+  string handler_name = 7;
+}
+
+message AptosOnIntervalConfig {
+  OnIntervalConfig interval_config = 1;
+  string type = 2;
+}
+
+enum MoveOwnerType {
+  ADDRESS = 0;
+  OBJECT = 1;
+  WRAPPED_OBJECT = 2;
+  TYPE = 3;
+}
+
+message MoveOnIntervalConfig {
+  OnIntervalConfig interval_config = 1;
+  // type of the owned object to filter
+  string type = 2;
+  MoveOwnerType owner_type = 3;
+  MoveAccountFetchConfig resource_fetch_config = 4;
+  MoveFetchConfig  fetch_config = 5;
+}
+
+message ContractInfo {
+  string name = 1;
+  // should this be more flexible?
+  string chain_id = 2;
+  string address = 3;
+  string abi = 4;
+}
+
+message TemplateInstance {
+  ContractInfo contract = 1;
+  uint64 start_block = 2;
+  uint64 end_block = 3;
+  int32 template_id = 4;
+  google.protobuf.Struct base_labels = 5;
+}
+
+message InitResponse {
+  repeated string chain_ids = 1;
+  DataBaseSchema db_schema = 2;
+
+  ProjectConfig config = 3;
+  ExecutionConfig execution_config = 4;
+
+  repeated MetricConfig metric_configs = 5;
+  repeated ExportConfig export_configs = 6;
+  repeated EventLogConfig event_log_configs = 7;
+}
+
+message ConfigureHandlersRequest {
+  string chain_id = 1;
+  repeated TemplateInstance template_instances = 2;
+}
+
+message StartRequest {
+  repeated TemplateInstance template_instances = 1;
+}
+
+message BlockHandlerConfig {
+  int32 handler_id = 1;
+}
+
+message EthFetchConfig {
+  bool transaction = 1;
+  bool transaction_receipt = 2;
+  bool transaction_receipt_logs = 5;
+  bool block = 3;
+  bool trace = 4;
+}
+
+message TraceHandlerConfig {
+  string signature = 1;
+  int32 handler_id = 2;
+  EthFetchConfig fetch_config = 3;
+  string handler_name = 4;
+}
+
+message TransactionHandlerConfig {
+  int32 handler_id = 1;
+  EthFetchConfig fetch_config = 3;
+  string handler_name = 4;
+}
+
+message LogHandlerConfig {
+  repeated LogFilter filters = 1;
+  int32 handler_id = 2;
+  EthFetchConfig fetch_config = 3;
+  string handler_name = 4;
+}
+
+message FuelAssetHandlerConfig {
+  repeated AssetFilter filters = 1;
+  int32 handler_id = 2;
+  message AssetFilter {
+    optional string asset_id = 1;
+    optional string from_address = 2;
+    optional string to_address = 3;
+  }
+  string handler_name = 3;
+}
+
+message FuelLogHandlerConfig {
+  repeated string log_ids = 1;
+  int32 handler_id = 2;
+  string handler_name = 3;
+}
+
+message FuelReceiptHandlerConfig {
+  message Transfer {
+    string asset_id = 4;
+    string from = 1;
+    string to = 2;
+  }
+  message Log {
+    repeated string log_ids = 1;
+  }
+  oneof receipt_filter {
+    Log log = 1;
+    Transfer transfer = 2;
+  }
+  int32 handler_id = 3;
+  string handler_name = 4;
+}
+
+message CosmosLogHandlerConfig {
+  repeated string log_filters = 1;
+  int32 handler_id = 2;
+  string handler_name = 3;
+}
+
+message LogFilter {
+  repeated Topic topics = 1;
+  // only used for when in account config
+  oneof address_or_type {
+    string address = 2;
+    AddressType address_type = 3;
+  }
+}
+
+enum AddressType {
+  ERC20 = 0;
+  ERC721 = 1;
+  ERC1155 = 2;
+}
+
+message InstructionHandlerConfig {
+  bool inner_instruction = 1;
+  bool parsed_instruction = 2;
+  bool raw_data_instruction = 3;
+}
+
+message ResourceConfig {
+  string move_type_prefix = 1;
+}
+
+message MoveFetchConfig {
+  bool resource_changes = 1;
+  bool all_events = 2;
+  bool inputs = 4;
+  optional ResourceConfig resource_config = 3;
+  optional bool support_multisig_func = 5;
+  optional bool include_failed_transaction = 6;
+}
+
+message MoveAccountFetchConfig {
+  bool owned = 1;
+}
+
+message MoveEventHandlerConfig {
+  repeated MoveEventFilter filters = 1;
+  int32 handler_id = 2;
+  MoveFetchConfig fetch_config = 3;
+  string handler_name = 4;
+}
+
+message MoveEventFilter {
+  // event type without address part
+  string type = 1;
+  // account address for event type
+  string account = 2;
+
+  // Event belong to the account,
+  // in case of multisig, it's the multisig account, otherwise it's the sender
+  string event_account = 3;
+}
+
+message MoveCallHandlerConfig {
+  repeated MoveCallFilter filters = 1;
+  int32 handler_id = 2;
+  MoveFetchConfig fetch_config = 3;
+  string handler_name = 4;
+}
+
+message MoveResourceChangeConfig {
+  string type = 1;
+  bool include_deleted = 4;
+  int32 handler_id = 2;
+  string handler_name = 3;
+}
+
+message MoveCallFilter {
+  message FromAndToAddress {
+    string from = 1;
+    string to = 2;
+  }
+
+  string function = 1;
+  repeated string type_arguments = 2;
+  bool with_type_arguments = 3;
+  bool include_failed = 4;
+  string public_key_prefix = 5;
+  optional FromAndToAddress from_and_to_address = 6;
+}
+
+message StarknetEventHandlerConfig {
+  repeated StarknetEventFilter filters = 1;
+  int32 handler_id = 2;
+  string handler_name = 3;
+}
+
+message BTCTransactionHandlerConfig {
+  repeated BTCTransactionFilter filters = 1;
+  int32 handler_id = 2;
+  string handler_name = 3;
+}
+
+message BTCTransactionFilter {
+  VinFilter inputFilter = 1;
+  VOutFilter outputFilter = 2;
+  repeated Filter filter = 3;
+
+  message Condition {
+    optional common.RichValue eq = 1;
+    optional common.RichValue gt = 2;
+    optional common.RichValue gte = 3;
+    optional common.RichValue lt = 4;
+    optional common.RichValue lte = 5;
+    optional common.RichValue ne = 6;
+    optional string prefix = 7;
+    optional string contains = 8;
+    optional string not_contains = 9;
+    optional int32 length_eq = 10;
+    optional int32 length_gt = 11;
+    optional int32 length_lt = 12;
+    optional common.RichValueList has_any = 13;
+    optional common.RichValueList has_all = 14;
+    optional common.RichValueList in = 15;
+  }
+
+  message Filter {
+    map<string, Condition> conditions = 1;
+  }
+
+  message Filters {
+    repeated Filter filters = 1;
+  }
+
+  message VinFilter {
+    Filters filters = 1;
+    Filter preVOut = 2;
+    BTCTransactionFilter preTransaction = 3;
+  }
+
+  message VOutFilter {
+    Filters filters = 1;
+  }
+}
+
+message StarknetEventFilter {
+  string address = 1;
+  repeated string keys = 2;
+}
+
+message FuelCallFilter {
+  string function = 1; // "" means all transaction
+  bool include_failed = 2;
+}
+
+message FuelCallHandlerConfig {
+  repeated FuelCallFilter filters = 1;
+  int32 handler_id = 2;
+  string handler_name = 3;
+}
+
+message FuelTransactionHandlerConfig {
+  int32 handler_id = 1;
+  string handler_name = 2;
+}
+
+message Topic {
+  repeated string hashes = 1;
+}
+
+message ProcessBindingsRequest {
+  repeated DataBinding bindings = 1;
+}
+
+message ProcessBindingResponse {
+  ProcessResult result = 1;
+
+  bool config_updated = 4 [deprecated = true];
+}
+
+message ProcessStreamRequest {
+  int32 process_id = 1;  // used to identify the processor run
+  oneof value {
+    DataBinding binding = 2; // start processor run
+    DBResponse db_result = 3; // send db response back during processor run
+    bool start = 4;
+  }
+}
+
+message ProcessStreamResponse {
+  int32 process_id = 1; // used to identify the processor run
+  oneof value {
+    DBRequest db_request = 2;  // processor send db request during processor run
+    ProcessResult result = 3;  // finish processor run
+    Partitions partitions = 4;
+  }
+
+  message Partitions {
+    message Partition {
+      enum SysValue {
+        BLOCK_NUMBER = 0;
+        SEQ_MODE = 1;
+        UNIQUE_VALUE = 2;
+      }
+      oneof value {
+        string user_value = 1;
+        SysValue sys_value = 2;
+      }
+    }
+    map<int32, Partition> partitions = 1; // key is handler id, because DataBinding.handler_ids is a array
+  }
+}
+
+message ProcessStreamResponseV2 {
+  int32 process_id = 1; // used to identify the processor run
+  oneof value {
+    ProcessStreamResponse.Partitions partitions = 2; // will be followed by a start request
+    DBRequest db_request = 3;  // response a DBResponse
+    TSRequest ts_request = 4; // no response
+    TPLRequest tpl_request = 5; // no response
+    ProcessResult result = 6;  // finish the binding data, no response
+  }
+
+
+}
+
+message PreprocessStreamRequest {
+  message DataBindings {
+    repeated DataBinding bindings = 1;
+  }
+
+  int32 process_id = 1;
+  oneof value {
+    DataBindings bindings = 2;
+    DBResponse db_result = 3; // send db response back during processor run
+  }
+}
+
+message PreprocessStreamResponse {
+  int32 process_id = 1;
+  DBRequest db_request = 2;  // processor send db request during processor run
+}
+
+message DBResponse {
+  uint64 op_id = 1;
+  oneof value {
+    google.protobuf.Struct data = 2; // @deprecate
+    google.protobuf.ListValue list = 4; // @deprecate
+    string error = 3;
+    common.RichStructList entities = 6; // @deprecate
+    EntityList entity_list = 7;
+  }
+  optional string next_cursor = 5;
+}
+
+message Entity {
+  string entity = 1;
+  uint64 gen_block_number = 2;
+  string gen_block_chain = 3;
+  google.protobuf.Timestamp gen_block_time = 4;
+  common.RichStruct data = 5;
+}
+
+message EntityList {
+  repeated Entity entities = 1;
+}
+
+message EntityUpdateData {
+  enum Operator {
+    SET = 0; // set the value
+    ADD = 1; // add the value, only for numeric type
+    MULTIPLY = 2; // multiply the value, only for numeric type
+  }
+  message FieldValue {
+    common.RichValue value = 1;
+    Operator op = 2;
+  }
+  map<string, FieldValue> fields = 1;
+}
+
+message TPLRequest {
+  repeated TemplateInstance templates = 1;
+}
+
+message TSRequest {
+  repeated TimeseriesResult data = 1;
+}
+
+message DBRequest {
+  uint64 op_id = 1;
+  oneof op {
+    DBGet get = 2;
+    DBUpsert upsert = 3;
+    DBUpdate update = 6;
+    DBDelete delete = 4;
+    DBList list = 5;
+  }
+
+  message DBGet {
+    string entity = 1;
+    string id = 2;
+  }
+  message DBList {
+    string entity = 1;
+    //    uint32 limit = 2; deprecated
+    //    uint32 offset = 3; deprecated
+    repeated DBFilter filters = 4;
+    string cursor = 5;
+    optional uint32 page_size = 6;
+  }
+  message DBUpsert {
+    repeated string entity = 1;
+    repeated string id = 2;
+    repeated google.protobuf.Struct data = 3; // @deprecate
+    repeated common.RichStruct entity_data = 4; // missing fields should use zero value
+  }
+  message DBUpdate {
+    repeated string entity = 1;
+    repeated string id = 2;
+    repeated EntityUpdateData entity_data = 3; // missing fields should use latest value
+  }
+
+
+  message DBDelete {
+    repeated string entity = 1;
+    repeated string id = 2;
+  }
+  message DBFilter {
+    string field = 1;
+    DBOperator op = 2;
+    common.RichValueList value = 3;
+  }
+  enum DBOperator {
+    EQ = 0;
+    NE = 1;
+    GT = 2;
+    GE = 3;
+    LT = 4;
+    LE = 5;
+    IN = 6;
+    NOT_IN = 7;
+    LIKE = 8;
+    NOT_LIKE = 9;
+    HAS_ALL = 10; // https://clickhouse.com/docs/en/sql-reference/functions/array-functions#hasall
+    HAS_ANY = 11; // https://clickhouse.com/docs/en/sql-reference/functions/array-functions#hasany
+  }
+}
+
+
+message Data {
+  // Every Handler type should have a data type
+  message EthLog {
+    google.protobuf.Struct log = 3; // deprecated
+    google.protobuf.Timestamp timestamp = 4;
+    optional google.protobuf.Struct transaction = 2; // deprecated
+    optional google.protobuf.Struct transaction_receipt = 5; // deprecated
+    optional google.protobuf.Struct block = 6; // deprecated
+    string raw_log = 7;
+    optional string raw_transaction = 8;
+    optional string raw_transaction_receipt = 9;
+    optional string raw_block = 10;
+  }
+  message EthBlock {
+    google.protobuf.Struct block = 2;
+  }
+  message EthTransaction {
+    google.protobuf.Struct transaction = 4; // deprecated
+    google.protobuf.Timestamp timestamp = 5;
+    optional google.protobuf.Struct transaction_receipt = 3; // deprecated
+    optional google.protobuf.Struct block = 6; // deprecated
+    optional google.protobuf.Struct trace = 7; // deprecated
+    string raw_transaction = 8;
+    optional string raw_transaction_receipt = 9;
+    optional string raw_block = 10;
+    optional string raw_trace = 11;
+  }
+  message EthTrace {
+    google.protobuf.Struct trace = 4;
+    google.protobuf.Timestamp timestamp = 5;
+    optional google.protobuf.Struct transaction = 2;
+    optional google.protobuf.Struct transaction_receipt = 3;
+    optional google.protobuf.Struct block = 6;
+  }
+  message SolInstruction {
+    string instruction_data = 1;
+    uint64 slot = 2;
+    string program_account_id = 3;
+    repeated string accounts = 5;
+    optional google.protobuf.Struct parsed = 4;
+  }
+  message AptEvent {
+    string raw_event = 1;
+    int32 event_index = 4;
+    google.protobuf.Struct transaction = 2 [deprecated = true];
+    string raw_transaction = 3; // if fetch all event is true, raw_transaction.events = all events, otherwise empty
+  }
+  message AptCall {
+    google.protobuf.Struct transaction = 2 [deprecated = true];
+    string raw_transaction = 3;
+  }
+  message AptResource {
+    repeated google.protobuf.Struct resources = 4 [deprecated = true];
+    int64 version = 2;
+    int64 timestampMicros = 5;
+    repeated string raw_resources = 6;
+  }
+  message SuiEvent {
+    google.protobuf.Struct transaction = 1 [deprecated = true];
+    string raw_event = 4;
+    string raw_transaction = 5;
+    google.protobuf.Timestamp timestamp = 2;
+    uint64 slot = 3;
+  }
+  message SuiCall {
+    google.protobuf.Struct transaction = 1 [deprecated = true];
+    string raw_transaction = 4;
+    google.protobuf.Timestamp timestamp = 2;
+    uint64 slot = 3;
+  }
+  message SuiObject {
+    repeated google.protobuf.Struct objects = 1 [deprecated = true]; // just details.content
+    optional google.protobuf.Struct self = 4 [deprecated = true];    // just details.content
+
+    repeated string raw_objects = 10;
+    optional string raw_self = 9;
+    string object_id = 5;      // self object property
+    uint64 object_version = 6; // self object property
+    string object_digest = 7;  // self object property
+    google.protobuf.Timestamp timestamp = 2; // checkpoint timestamp
+    uint64 slot = 3;                         // checkpoint number
+  }
+  message SuiObjectChange {
+    repeated google.protobuf.Struct changes = 1 [deprecated = true];
+    repeated string raw_changes = 5;
+    google.protobuf.Timestamp timestamp = 2;
+    string tx_digest = 4;
+    uint64 slot = 3;
+  }
+  message FuelReceipt {
+    google.protobuf.Struct transaction = 1;
+    google.protobuf.Timestamp timestamp = 2;
+    int64 receipt_index = 3;
+  }
+  message FuelTransaction {
+    google.protobuf.Struct transaction = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+  message FuelCall {
+    option deprecated = true;
+    google.protobuf.Struct transaction = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+  message FuelBlock {
+    google.protobuf.Struct block = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+  message CosmosCall {
+    google.protobuf.Struct transaction = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+  message StarknetEvent {
+    google.protobuf.Struct result = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+
+  message BTCTransaction {
+    google.protobuf.Struct transaction = 4;
+    google.protobuf.Timestamp timestamp = 5;
+  }
+
+  message BTCBlock {
+    google.protobuf.Struct block = 1;
+    google.protobuf.Timestamp timestamp = 2;
+  }
+
+  oneof value {
+    EthLog eth_log = 2;
+    EthBlock eth_block = 3;
+    EthTransaction eth_transaction = 4;
+    EthTrace eth_trace = 5;
+    SolInstruction sol_instruction = 6;
+    AptEvent apt_event = 7;
+    AptCall apt_call = 8;
+    AptResource apt_resource = 9;
+    SuiEvent sui_event = 10;
+    SuiCall sui_call = 11;
+    SuiObject sui_object = 12;
+    SuiObjectChange sui_object_change = 13;
+    FuelReceipt fuel_log = 20; // should rename to fuel_receipt
+    FuelCall fuel_call = 14  [deprecated = true];
+    FuelTransaction fuel_transaction = 21;
+    FuelBlock fuel_block = 18;
+    CosmosCall cosmos_call = 15;
+    StarknetEvent starknet_events = 16;
+    BTCTransaction btc_transaction = 17;
+    BTCBlock btc_block = 19;
+  }
+}
+
+message DataBinding {
+  Data data = 1;
+  HandlerType handler_type = 3;
+  repeated int32 handler_ids = 4;
+}
+
+message StateResult {
+  // Whether config update because of dynamic contract processor creation
+  // Currently only support log handler in ethereum
+  bool config_updated = 1;
+  // whether the processor run is failed
+  optional string error = 2;
+}
+
+message ProcessResult {
+  repeated GaugeResult gauges = 1;
+  repeated CounterResult counters = 2;
+  repeated LogResult logs = 3 [deprecated = true];
+  repeated EventTrackingResult events = 4;
+  repeated ExportResult exports = 5;
+  StateResult states = 6;
+  repeated TimeseriesResult timeseries_result = 7;
+}
+
+message EthCallParam {
+  EthCallContext context = 1;
+  string calldata = 2;
+}
+
+message EthCallContext {
+  string chain_id = 1;
+  string address = 2;
+  string block_tag = 3;
+}
+
+message PreprocessResult {
+  repeated EthCallParam ethCallParams = 1;
+}
+
+message PreparedData {
+  map<string, string> eth_call_results = 1;
+}
+
+message RecordMetaData {
+  // These are populated by systems.
+
+  // Contract or Wallet or Account address
+  string address = 1;
+  // Contract (solidity) or module (move) or programId (solana)
+  // it could be empty if this is not record for a contract
+  // In some chain (e.g. aptos)
+  // one address could have multiple contract/module name
+  string contract_name = 9;
+  // Block or slot (solana) or version (aptos) number
+  uint64 block_number = 2;
+  string transaction_hash = 6;
+  string chain_id = 5;
+
+  // optional for ether
+  int32 transaction_index = 3;
+  int32 log_index = 4;
+
+  // These are populated by users in meter.
+  // The metric name and properties
+  string name = 10;
+
+  // The metric labels provided by users.
+  map<string, string> labels = 7;
+}
+
+message MetricValue {
+  oneof value {
+    string big_decimal = 1;
+    double double_value = 2;
+    common.BigInteger big_integer = 3;
+  }
+}
+
+
+
+enum HandlerType {
+  UNKNOWN = 0;
+  ETH_LOG = 1;
+  ETH_BLOCK = 2;
+  ETH_TRACE = 5;
+  ETH_TRANSACTION = 11;
+  SOL_INSTRUCTION = 4;
+  APT_EVENT = 6;
+  APT_CALL = 7;
+  APT_RESOURCE = 8;
+  SUI_EVENT = 3;
+  SUI_CALL = 9;
+  SUI_OBJECT = 10;
+  SUI_OBJECT_CHANGE = 12;
+  FUEL_CALL = 13; // [deprecated = true] can't remove from ts codegen due to type conflict
+  FUEL_RECEIPT = 19;
+  FUEL_TRANSACTION = 20;
+  FUEL_BLOCK = 17;
+  COSMOS_CALL = 14;
+  STARKNET_EVENT = 15;
+  BTC_TRANSACTION = 16;
+  BTC_BLOCK = 18;
+}
+
+message RuntimeInfo {
+  HandlerType from = 1;
+}
+
+message GaugeResult {
+  RecordMetaData metadata = 1;
+  MetricValue metric_value = 2;
+  RuntimeInfo runtime_info = 3;
+}
+
+message CounterResult {
+  RecordMetaData metadata = 1;
+  MetricValue metric_value = 2;
+  // True to increase or False to decrease
+  bool add = 3;
+  RuntimeInfo runtime_info = 4;
+}
+
+enum LogLevel {
+  DEBUG = 0;
+  INFO = 1;
+  WARNING = 2;
+  ERROR = 3;
+  CRITICAL = 4;
+}
+
+message LogResult {
+  option deprecated = true;
+  RecordMetaData metadata = 1;
+  LogLevel level = 2;
+  string message = 3;
+  // JSON payload
+  string attributes = 6 [deprecated = true];
+  google.protobuf.Struct attributes2 = 7;
+  RuntimeInfo runtime_info = 4;
+}
+
+message EventTrackingResult {
+  RecordMetaData metadata = 1;
+  string distinct_entity_id = 2;
+  google.protobuf.Struct attributes = 6;
+  LogLevel severity = 7;
+  string message = 8;
+  RuntimeInfo runtime_info = 5;
+  common.RichStruct attributes2 = 9;
+
+  // TODO remove this after driver don't use old event tracker
+  bool no_metric = 3;
+}
+
+message TimeseriesResult {
+  RecordMetaData metadata = 1;
+  enum TimeseriesType {
+    EVENT = 0;
+    GAUGE = 1;
+    COUNTER = 2;
+  }
+  TimeseriesType type = 2;
+  common.RichStruct data = 3; // for metric data, it has to be a value field contains MetricValue, other fields are labels
+  RuntimeInfo runtime_info = 4;
+}
+
+message ExportResult {
+  RecordMetaData metadata = 1;
+  string payload = 2;
+  RuntimeInfo runtime_info = 3;
+}

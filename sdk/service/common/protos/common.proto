@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package common;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "sentioxyz/sentio/service/common/protos";
+
+message RichValue {
+  oneof value {
+    NullValue null_value = 1;
+    int32 int_value = 2;
+    int64 int64_value = 13;
+    double float_value = 3;
+    bytes bytes_value = 4;
+    bool bool_value = 5;
+    string string_value = 6;
+    google.protobuf.Timestamp timestamp_value = 7;
+    BigInteger bigint_value = 8;
+    BigDecimal bigdecimal_value = 9;
+    RichValueList list_value = 10;
+    RichStruct struct_value = 11;
+    TokenAmount token_value = 12;
+  }
+  enum NullValue {
+    NULL_VALUE = 0;
+  }
+}
+
+message RichStruct {
+  map<string, RichValue> fields = 1;
+}
+
+message RichValueList {
+  repeated RichValue values = 1;
+}
+
+message RichStructList {
+  repeated RichStruct entities = 1;
+}
+
+message BigDecimal {
+  BigInteger value = 1;
+  int32 exp = 2;
+}
+
+message BigInteger {
+  bool negative = 1;
+  bytes data = 2;
+}
+
+message TokenAmount {
+  CoinID token = 1;
+  BigDecimal amount = 2;
+  google.protobuf.Timestamp specified_at = 3; // optional, if not specified, it will use block_time in eventlogs
+}
+
+enum CoinID {
+  UNKNOWN = 0;
+  ETH = 1;
+  BTC = 2;
+  USDC = 3;
+  USDT = 4;
+  // Add more coin types as needed
+}

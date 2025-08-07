@@ -40,7 +40,7 @@ cargo run --bin eth-basic -- --host 0.0.0.0 --port 9090 --debug
 
 ## Code Structure
 
-- **Default Handler**: Uses the SDK's built-in `DefaultProcessorV3Handler`
+- **Default Handler**: Uses the SDK's built-in ProcessorV3Handler implementation in Server
 - **Synchronous main()**: No `#[tokio::main]` needed - the server handles runtime creation
 - **Built-in CLI**: Automatic command line parsing and logging setup
 - **Ethereum focus**: Configured for Ethereum chain processing by default
@@ -49,11 +49,12 @@ cargo run --bin eth-basic -- --host 0.0.0.0 --port 9090 --debug
 
 This example shows the simplest pattern for ProcessorV3 servers:
 
-1. **Minimal code**: Just `Server::new().start()`
-2. **No handler implementation**: SDK provides default ProcessorV3Handler
+1. **Minimal code**: Just `Server::new().start();`
+2. **No handler implementation**: Server implements ProcessorV3Handler by default
 3. **No async setup**: The SDK handles all async runtime management
-4. **Built-in logging**: Automatic tracing setup based on CLI args
-5. **Zero boilerplate**: Focus on getting started quickly
+4. **No error handling**: The SDK logs errors and exits automatically
+5. **Built-in logging**: Automatic tracing setup based on CLI args
+6. **Zero boilerplate**: Focus on getting started quickly
 
 ## Debug Logging
 
@@ -93,7 +94,7 @@ Key areas to customize:
 
 ## Custom Handler Example
 
-The SDK provides `DefaultProcessorV3Handler` that you can extend or replace entirely with `Server::with_handler()`.
+The Server struct directly implements ProcessorV3Handler with default behavior that you can customize.
 
 ## Related Documentation
 

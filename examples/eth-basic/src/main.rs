@@ -1,16 +1,21 @@
-use anyhow::Result;
 use sentio_sdk::Server;
+use sentio_sdk::eth::processor::*;
 
-// No #[tokio::main] needed! The server creates its own runtime
-fn main() -> Result<()> {
+fn main() {
     println!("Starting Ethereum Basic Processor server...");
     println!("Use --help to see CLI options. Example: --port 8080 --debug");
+    
+    let mut server = Server::new();
 
-    // The SDK provides a default ProcessorV3Handler implementation
-    let server = Server::new();
+    // Create a processor bound to a specific contract address
+    EthProcessor::bind(
+        &mut server,
+        EthBindOptions::new("0x1234567890123456789012345678901234567890")
+            .with_name("My ETH Processor")
+            .with_network("1")
+    ).on_event(|_event, _ctx| async {
+        println!("Processing event!");
+    }, None, None);
 
-    // This blocks until the server stops - no async main needed!
-    server.start()?;
-
-    Ok(())
+    server.start();
 }

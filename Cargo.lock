@@ -335,7 +335,6 @@ dependencies = [
 name = "eth-basic"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "sentio-sdk",
 ]
 

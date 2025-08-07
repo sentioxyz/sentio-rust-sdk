@@ -1,6 +1,6 @@
 pub mod server;
 pub mod eth;
-pub mod default_handler;
+pub mod core;
 
 // Include the generated protobuf code
 pub mod common {
@@ -14,8 +14,10 @@ pub mod processor {
 // Re-export commonly used types for convenience
 pub use processor::*;
 pub use common::*;
-pub use server::{ProcessorV3Handler, Server, ServerArgs};
-pub use default_handler::DefaultProcessorV3Handler;
+pub use server::{Server, ServerArgs};
+pub use core::{BaseProcessor, Plugin};
+pub use eth::EthPlugin;
+pub use processor::HandlerType;
 
 // Re-export tonic for users who need to implement servers
 pub use tonic;

@@ -6,17 +6,14 @@ use std::any::Any;
 pub trait Plugin: Send + Sync + Any {
     /// Returns an array of all supported handler types for this plugin
     fn handler_types(&self) -> &'static [HandlerType];
-
-    /// Returns the plugin name/identifier
-    fn plugin_name(&self) -> &str {
-        "unnamed-plugin"
-    }
     
     /// Get the number of registered processors
     fn processor_count(&self) -> usize;
     
     /// Iterate over all registered processors
     fn iter_processors(&self) -> Box<dyn Iterator<Item = &Box<dyn BaseProcessor>> + '_>;
+
+    fn name() -> &'static str where Self: Sized;
 }
 
 /// Extension trait for type-safe processor registration

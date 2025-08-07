@@ -1,3 +1,4 @@
+use tracing::debug;
 use crate::processor::HandlerType;
 use crate::core::{Plugin, PluginRegister, HandlerRegister, BaseProcessor};
 use crate::eth::processor::EthProcessor;
@@ -42,10 +43,6 @@ impl Plugin for EthPlugin {
         ]
     }
 
-    fn plugin_name(&self) -> &str {
-        "eth-plugin"
-    }
-    
     fn processor_count(&self) -> usize {
         self.processors.len()
     }
@@ -53,11 +50,18 @@ impl Plugin for EthPlugin {
     fn iter_processors(&self) -> Box<dyn Iterator<Item = &Box<dyn BaseProcessor>> + '_> {
         Box::new(self.processors.iter())
     }
+
+    fn name() -> &'static str
+    where
+        Self: Sized,
+    {
+        "eth-plugin"
+    }
 }
 
 impl PluginRegister<EthProcessor> for EthPlugin {
     fn register_processor(&mut self, processor: EthProcessor) -> &mut EthProcessor {
-        println!("Registering processor: {} (chain_id: {})", processor.name(), processor.chain_id());
+        debug!("Registering processor: {} (chain_id: {})", processor.name(), processor.chain_id());
 
         self.processors.push(Box::new(processor));
 
@@ -65,7 +69,7 @@ impl PluginRegister<EthProcessor> for EthPlugin {
         // This is safe because we just pushed the processor
         let last_processor = self.processors.last_mut().unwrap();
 
-        // Use Any trait to downcast back to concrete type
+        // Use Any trait to downcast back to a concrete type
         use std::any::Any;
         let any_ref = last_processor.as_mut() as &mut dyn Any;
         any_ref.downcast_mut::<EthProcessor>().unwrap()

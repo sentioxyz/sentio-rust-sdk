@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use crate::{EthPlugin, BaseProcessor, Plugin};
-use crate::core::PluginRegister;
-use crate::eth::processor::EthProcessor;
+use crate::{BaseProcessor, Plugin};
 
 #[derive(Default)]
 pub struct PluginManager {
@@ -12,21 +10,21 @@ impl PluginManager {
     /// Get or create a plugin by type. If plugin doesn't exist, create it using Default::default().
     pub fn plugin<P: Plugin + Default + 'static>(&mut self) -> &mut P {
         // Create a temporary instance to get the plugin name
-        let temp_plugin = P::default();
-        let plugin_name = temp_plugin.plugin_name().to_string();
-        
+        let name = P::name();
+
         // Check if plugin already exists, if not insert new one
-        if !self.plugins.contains_key(&plugin_name) {
-            self.plugins.insert(plugin_name.clone(), Box::new(temp_plugin));
+        if !self.plugins.contains_key(name) {
+            let temp_plugin = P::default();
+            self.plugins.insert(name.to_string(), Box::new(temp_plugin));
         }
         
         // Get the plugin and downcast it
-        let plugin_box = self.plugins.get_mut(&plugin_name).unwrap();
+        let plugin_box = self.plugins.get_mut(name).unwrap();
         let any_plugin = plugin_box.as_mut() as &mut dyn std::any::Any;
         any_plugin.downcast_mut::<P>().expect("Plugin type mismatch")
     }
     
-    /// Get total number of processors across all plugins
+    /// Get the total number of processors across all plugins
     pub fn total_processor_count(&self) -> usize {
         self.plugins.values().map(|plugin| plugin.processor_count()).sum()
     }

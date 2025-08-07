@@ -104,19 +104,14 @@ pub struct EthProcessor {
 
 impl EthProcessor {
     /// Create a new EthProcessor bound to a specific contract address
-    pub fn bind(server: &mut Server, args: EthBindOptions) -> &mut Self {
+    pub fn bind(server: &mut Server, options: EthBindOptions) -> &mut Self {
         let processor = Self {
-            options: args,
+            options,
             event_handlers: Vec::new(),
         };
         
         // Register the processor with the EthPlugin via PluginManager
         server.plugin_manager.plugin::<EthPlugin>().register_processor(processor)
-    }
-
-    /// Convenience method to bind to an address directly
-    pub fn bind_address(server: &mut Server, address: impl Into<String>) -> &mut Self {
-        Self::bind(server, EthBindOptions::new(address))
     }
 
     /// Get the number of registered event handlers

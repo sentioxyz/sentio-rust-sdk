@@ -19,20 +19,4 @@ pub use core::{BaseProcessor, Plugin};
 pub use eth::EthPlugin;
 pub use processor::HandlerType;
 
-// Re-export tonic for users who need to implement servers
-pub use tonic;
-
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+ 

@@ -18,7 +18,7 @@ use crate::processor::{
 #[command(about = "Sentio Processor gRPC Server")]
 pub struct ServerArgs {
     /// Port to listen on
-    #[arg(short, long, default_value = "50051")]
+    #[arg(short, long, default_value = "4000")]
     pub port: u16,
 
     /// Enable debug/verbose logging
@@ -56,7 +56,7 @@ impl Server {
         tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| format!("{}={}", env!("CARGO_PKG_NAME"), level).into())
+                    .unwrap_or_else(|_| level.into())
             )
             .with_target(false)
             .with_thread_ids(debug)

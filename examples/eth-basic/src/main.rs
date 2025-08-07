@@ -2,9 +2,6 @@ use sentio_sdk::Server;
 use sentio_sdk::eth::processor::*;
 
 fn main() {
-    println!("Starting Ethereum Basic Processor server...");
-    println!("Use --help to see CLI options. Example: --port 8080 --debug");
-    
     let mut server = Server::new();
 
     // Create a processor bound to a specific contract address

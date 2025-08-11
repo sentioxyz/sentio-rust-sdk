@@ -5,7 +5,7 @@ use std::any::Any;
 /// Base trait that all processors must implement
 pub trait BaseProcessor: Send + Sync + Any {
     /// Returns the chain ID this processor works on
-    fn chain_id(&self) -> u64;
+    fn chain_id(&self) -> &str;
     
     /// Returns a human-readable name for this processor
     fn name(&self) -> &str {

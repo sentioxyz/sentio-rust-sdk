@@ -2,6 +2,9 @@ pub mod server;
 pub mod eth;
 pub mod core;
 
+#[cfg(test)]
+mod server_test;
+
 // Include the generated protobuf code
 pub mod common {
     tonic::include_proto!("common");

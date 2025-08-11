@@ -1,15 +1,15 @@
 use std::net::SocketAddr;
 
+use crate::core::plugin_manager::PluginManager;
 use anyhow::Result;
 use clap::Parser;
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
-use tracing::{info, debug, error};
-use crate::core::plugin_manager::PluginManager;
+use tracing::{debug, error, info};
 
 use crate::processor::{
     processor_v3_server::{ProcessorV3, ProcessorV3Server as TonicProcessorV3Server},
-    InitResponse, ConfigureHandlersRequest, ConfigureHandlersResponse,
-    ProcessStreamRequest, ProcessStreamResponseV2, ExecutionConfig
+    ConfigureHandlersRequest, ConfigureHandlersResponse, ExecutionConfig, InitResponse,
+    ProcessStreamRequest, ProcessStreamResponseV2,
 };
 
 /// Command line arguments for the Sentio server
@@ -30,33 +30,29 @@ pub struct ServerArgs {
     pub host: String,
 }
 
-
-
 /// Sentio Processor gRPC Server
 pub struct Server {
     args: Option<ServerArgs>,
-    pub plugin_manager: PluginManager,
+    pub plugin_manager: std::sync::Arc<tokio::sync::RwLock<PluginManager>>,
 }
 
 impl Server {
-    
     /// Create a new Server with standard Ethereum configuration
     pub fn new() -> Self {
         Self {
             args: None,
-            plugin_manager: Default::default(),
+            plugin_manager: std::sync::Arc::new(tokio::sync::RwLock::new(Default::default())),
         }
     }
-
 
     /// Initialize logging based on debug flag
     fn init_logging(debug: bool) {
         let level = if debug { "debug" } else { "info" };
-        
+
         tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| level.into())
+                    .unwrap_or_else(|_| level.into()),
             )
             .with_target(false)
             .with_thread_ids(debug)
@@ -80,18 +76,17 @@ impl Server {
     fn try_start(self) -> Result<()> {
         // Parse command line arguments or use provided args
         let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
-        
+
         // Initialize logging
         Self::init_logging(args.debug);
 
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-        
+
         info!("Starting Sentio Processor server on {}", addr);
         debug!("Server configuration: {:?}", args);
-        info!("Registered {} processor(s):", self.plugin_manager.total_processor_count());
-        for (i, processor) in self.plugin_manager.iter_processors().enumerate() {
-            info!("  {}. {} (chain_id: {})", i + 1, processor.name(), processor.chain_id());
-        }
+        // Note: We can't easily get processor count here without blocking on async lock
+        // This will be logged during init() call instead
+        info!("Starting server with plugin manager initialized");
 
         // Create and block on the Tokio runtime
         let rt = tokio::runtime::Runtime::new()?;
@@ -126,13 +121,16 @@ impl Server {
     {
         // Parse command line arguments or use provided args
         let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
-        
+
         // Initialize logging
         Self::init_logging(args.debug);
 
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-        
-        info!("Starting Sentio Processor server on {} with shutdown support", addr);
+
+        info!(
+            "Starting Sentio Processor server on {} with shutdown support",
+            addr
+        );
         debug!("Server configuration: {:?}", args);
 
         // Create and block on the Tokio runtime
@@ -153,12 +151,12 @@ impl Server {
     pub async fn start_async(self) -> Result<()> {
         // Parse command line arguments or use provided args
         let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
-        
+
         // Initialize logging
         Self::init_logging(args.debug);
 
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-        
+
         info!("Starting Sentio Processor server on {}", addr);
         debug!("Server configuration: {:?}", args);
 
@@ -179,13 +177,16 @@ impl Server {
     {
         // Parse command line arguments or use provided args
         let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
-        
+
         // Initialize logging
         Self::init_logging(args.debug);
 
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-        
-        info!("Starting Sentio Processor server on {} with shutdown support", addr);
+
+        info!(
+            "Starting Sentio Processor server on {} with shutdown support",
+            addr
+        );
         debug!("Server configuration: {:?}", args);
 
         TonicServer::builder()
@@ -205,20 +206,31 @@ impl Default for Server {
 
 #[tonic::async_trait]
 impl ProcessorV3 for Server {
-    type ProcessBindingsStreamStream = tonic::codec::Streaming<ProcessStreamResponseV2>;
+    type ProcessBindingsStreamStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<ProcessStreamResponseV2, Status>> + Send>,
+    >;
 
     async fn init(&self, request: Request<()>) -> Result<Response<InitResponse>, Status> {
-        debug!("Received init request from client: {:?}", request.remote_addr());
+        debug!(
+            "Received init request from client: {:?}",
+            request.remote_addr()
+        );
         info!("Initializing Sentio Processor...");
 
         // Collect unique chain IDs from all registered processors
-        let mut chain_ids = self.plugin_manager.get_all_chain_ids();
-        
+        let plugin_manager = self.plugin_manager.read().await;
+        let mut chain_ids = plugin_manager.get_all_chain_ids();
+        let processor_count = plugin_manager.total_processor_count();
+
         // Sort for consistent ordering
         chain_ids.sort();
 
-        debug!("Found {} unique chain IDs from {} processors: {:?}", 
-               chain_ids.len(), self.plugin_manager.total_processor_count(), chain_ids);
+        debug!(
+            "Found {} unique chain IDs from {} processors: {:?}",
+            chain_ids.len(),
+            processor_count,
+            chain_ids
+        );
 
         let response = InitResponse {
             chain_ids,
@@ -237,7 +249,10 @@ impl ProcessorV3 for Server {
             event_log_configs: vec![],
         };
 
-        info!("Init completed, returning {} chain IDs", response.chain_ids.len());
+        info!(
+            "Init completed, returning {} chain IDs",
+            response.chain_ids.len()
+        );
         Ok(Response::new(response))
     }
 
@@ -247,9 +262,14 @@ impl ProcessorV3 for Server {
     ) -> Result<Response<ConfigureHandlersResponse>, Status> {
         let remote_addr = request.remote_addr();
         let req_data = request.into_inner();
-        debug!("Received configure_handlers request from {:?} for chain: {}",
-               remote_addr, req_data.chain_id);
-        debug!("Template instances count: {}", req_data.template_instances.len());
+        debug!(
+            "Received configure_handlers request from {:?} for chain: {}",
+            remote_addr, req_data.chain_id
+        );
+        debug!(
+            "Template instances count: {}",
+            req_data.template_instances.len()
+        );
 
         info!(
             "Configuring handlers for chain: {}, templates: {}",
@@ -259,20 +279,31 @@ impl ProcessorV3 for Server {
 
         // Log template details in debug mode
         for (i, template) in req_data.template_instances.iter().enumerate() {
-            debug!("Template {}: {:?} (ID: {})", i, template.contract, template.template_id);
+            debug!(
+                "Template {}: {:?} (ID: {})",
+                i, template.contract, template.template_id
+            );
         }
 
-        // Default implementation returns empty configs
-        // Users can extend this by implementing their own ProcessorV3Handler
-        let response = ConfigureHandlersResponse {
+        let mut response = ConfigureHandlersResponse {
             contract_configs: vec![],
             account_configs: vec![],
         };
 
-        debug!("Handler configuration completed with {} contract configs",
-               response.contract_configs.len());
-        info!("Configure handlers completed for chain, returning {} contract configs",
-              response.contract_configs.len());
+        // Use the plugin_manager's configure_all_plugins method
+        self.plugin_manager
+            .write()
+            .await
+            .configure_all_plugins(req_data, &mut response);
+
+        debug!(
+            "Handler configuration completed with {} contract configs",
+            response.contract_configs.len()
+        );
+        info!(
+            "Configure handlers completed for chain, returning {} contract configs",
+            response.contract_configs.len()
+        );
         Ok(Response::new(response))
     }
 
@@ -280,13 +311,84 @@ impl ProcessorV3 for Server {
         &self,
         request: Request<tonic::Streaming<ProcessStreamRequest>>,
     ) -> Result<Response<Self::ProcessBindingsStreamStream>, Status> {
-        debug!("Starting process_bindings_stream from client: {:?}", request.remote_addr());
+        use crate::processor::process_stream_request;
+        use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+
+        debug!(
+            "Starting process_bindings_stream from client: {:?}",
+            request.remote_addr()
+        );
         info!("Starting bindings stream processing");
-        debug!("Using default implementation - streaming not implemented");
-        
-        // Default implementation returns unimplemented
-        // Users should implement their own ProcessorV3Handler for custom processing
-        Err(Status::unimplemented("Default implementation - implement ProcessorV3Handler for custom processing"))
+
+        let mut inbound_stream = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(1000);
+
+        // Clone the plugin manager Arc for sharing between tasks
+        let plugin_manager = self.plugin_manager.clone();
+
+        tokio::spawn(async move {
+            while let Some(stream_request) = inbound_stream.next().await {
+                match stream_request {
+                    Ok(req) => {
+                        debug!(
+                            "Received stream request with process_id: {}",
+                            req.process_id
+                        );
+                        let process_id = req.process_id;
+                        let tx_clone = tx.clone();
+
+                        // Process the request and send responses
+                        if let Some(value) = req.value {
+                            match value {
+                                process_stream_request::Value::Binding(binding) => {
+                                    debug!("Processing binding for chain_id: {}", binding.chain_id);
+
+                                    // Use PluginManager's process method directly with the binding
+                                    // No need to create a new DataBinding since binding is already the right type
+                                    let pm = plugin_manager.read().await;
+                                    match pm.process(&binding).await {
+                                        Ok(result) => {
+                                            debug!(
+                                                "Successfully processed binding for chain '{}'",
+                                                binding.chain_id
+                                            );
+                                            let response = ProcessStreamResponseV2 {
+                                                process_id,
+                                                value: Some(crate::processor::process_stream_response_v2::Value::Result(result)),
+                                            };
+                                            if let Err(e) = tx_clone.send(Ok(response)).await {
+                                                error!("Failed to send response: {}", e);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to process binding for chain '{}': {}",
+                                                binding.chain_id, e
+                                            );
+                                        }
+                                    }
+                                }
+                                process_stream_request::Value::DbResult(_db_result) => {
+                                    debug!("Received DB result, ignoring for now");
+                                    // TODO: Handle DB results if needed
+                                }
+                                process_stream_request::Value::Start(start) => {
+                                    debug!("Received start signal: {}", start);
+                                    // Handle start signal if needed
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error receiving stream request: {}", e);
+                        break;
+                    }
+                }
+            }
+            debug!("Stream processing task completed");
+        });
+
+        let response_stream = ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(response_stream)))
     }
 }
-

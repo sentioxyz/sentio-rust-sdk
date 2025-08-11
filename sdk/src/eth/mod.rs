@@ -1,7 +1,7 @@
-pub mod processor;
+pub mod eth_processor;
 pub mod handler_type;
-pub mod plugin;
-mod context;
+pub mod eth_plugin;
+pub mod context;
 
 pub use handler_type::EthHandlerType;
-pub use plugin::EthPlugin;
+pub use eth_plugin::EthPlugin;

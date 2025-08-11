@@ -10,8 +10,22 @@ description = "CLI tool for compiling Sentio processors in Rust"
 name = "sentio"
 path = "src/main.rs"
 
+[[bin]]
+name = "cargo-sentio"
+path = "src/main.rs"
+
 [dependencies]
 sentio-sdk = { path = "../sdk" }
 clap = { version = "4.0", features = ["derive"] }
 anyhow = "1.0"
 tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+dirs = "5.0"
+reqwest = { version = "0.11", features = ["json", "multipart"] }
+
+[dev-dependencies]
+tempfile = "3.0"

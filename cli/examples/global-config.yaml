@@ -1,0 +1,7 @@
+api_endpoint: https://api.sentio.xyz
+default_network: ethereum
+
+build_settings:
+  target: x86_64-unknown-linux-gnu
+  optimization_level: release
+  features: []

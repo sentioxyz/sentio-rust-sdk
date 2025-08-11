@@ -1,0 +1,22 @@
+name: example-processor
+version: 1.0.0
+target_network: ethereum
+
+build:
+  target: x86_64-unknown-linux-gnu
+  optimization_level: release
+  features:
+    - default
+
+contracts:
+  - address: "0xA0b86a33E6441e6e80D0c4C34F4f5c0e0e9b0e0e"
+    name: UniswapV3Pool
+    network: ethereum
+    abi_path: abis/UniswapV3Pool.json
+    added_at: "2024-01-15T10:30:00Z"
+  
+  - address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    name: WETH
+    network: ethereum
+    abi_path: abis/WETH.json
+    added_at: "2024-01-15T10:35:00Z"

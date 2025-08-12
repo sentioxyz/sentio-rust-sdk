@@ -56,9 +56,36 @@ enum Commands {
     },
     /// Upload compiled binary to Sentio platform
     Upload {
-        /// Path to binary file
+        /// Project path
+        #[arg(long, default_value = ".")]
+        path: String,
+        /// Override Sentio Host name
         #[arg(long)]
-        binary: Option<String>,
+        host: Option<String>,
+        /// Override Project owner
+        #[arg(long)]
+        owner: Option<String>,
+        /// Override Project name
+        #[arg(long)]
+        name: Option<String>,
+        /// Your API key for authentication
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Bearer token for authentication
+        #[arg(long)]
+        token: Option<String>,
+        /// Continue processing data from the specific processor version
+        #[arg(long)]
+        continue_from: Option<u32>,
+        /// Skip build & pack file before uploading
+        #[arg(long)]
+        nobuild: bool,
+        /// Run driver in debug mode
+        #[arg(long)]
+        debug: bool,
+        /// Overwrite existing processor version without confirmation
+        #[arg(long)]
+        silent_overwrite: bool,
     },
     /// Manage authentication with Sentio platform
     Auth {
@@ -84,11 +111,26 @@ enum Commands {
 #[derive(Subcommand)]
 enum AuthActions {
     /// Login to Sentio platform
-    Login,
+    Login {
+        /// Override Sentio Host name
+        #[arg(long)]
+        host: Option<String>,
+        /// Your API key for direct login
+        #[arg(long)]
+        api_key: Option<String>,
+    },
     /// Logout from Sentio platform
-    Logout,
+    Logout {
+        /// Override Sentio Host name
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Check authentication status
-    Status,
+    Status {
+        /// Override Sentio Host name
+        #[arg(long)]
+        host: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -153,17 +195,40 @@ async fn main() -> Result<()> {
             };
             command.execute().await?;
         }
-        Commands::Upload { binary } => {
-            let command = upload::UploadCommand { binary_path: binary };
+        Commands::Upload { 
+            path, host, owner, name, api_key, token, continue_from, 
+            nobuild, debug, silent_overwrite 
+        } => {
+            let command = upload::UploadCommand {
+                path,
+                host,
+                owner,
+                name,
+                api_key,
+                token,
+                continue_from,
+                nobuild,
+                debug,
+                silent_overwrite,
+            };
             command.execute().await?;
         }
         Commands::Auth { action } => {
-            let auth_action = match action {
-                AuthActions::Login => auth::AuthAction::Login,
-                AuthActions::Logout => auth::AuthAction::Logout,
-                AuthActions::Status => auth::AuthAction::Status,
+            let command = match action {
+                AuthActions::Login { host, api_key } => {
+                    auth::AuthCommand::new(auth::AuthAction::Login)
+                        .with_host(host)
+                        .with_api_key(api_key)
+                }
+                AuthActions::Logout { host } => {
+                    auth::AuthCommand::new(auth::AuthAction::Logout)
+                        .with_host(host)
+                }
+                AuthActions::Status { host } => {
+                    auth::AuthCommand::new(auth::AuthAction::Status)
+                        .with_host(host)
+                }
             };
-            let command = auth::AuthCommand { action: auth_action };
             command.execute().await?;
         }
         Commands::Contract { action } => {

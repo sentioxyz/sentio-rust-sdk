@@ -14,6 +14,21 @@ pub struct UploadRequest {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(default)]
+pub struct CheckKeyResponse {
+    pub username: String,
+}
+
+impl Default for CheckKeyResponse {
+    fn default() -> Self {
+        Self {
+            username: String::new(),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(default)]
 pub struct UploadResponse {
     pub deployment_id: String,
     pub status: String,
@@ -21,18 +36,51 @@ pub struct UploadResponse {
     pub message: Option<String>,
 }
 
+impl Default for UploadResponse {
+    fn default() -> Self {
+        Self {
+            deployment_id: String::new(),
+            status: String::new(),
+            url: String::new(),
+            message: None,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
+#[serde(default)]
 pub struct ApiError {
     pub error: String,
     pub message: String,
     pub code: Option<i32>,
 }
 
+impl Default for ApiError {
+    fn default() -> Self {
+        Self {
+            error: String::new(),
+            message: String::new(),
+            code: None,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
+#[serde(default)]
 pub struct AuthResponse {
     pub token: String,
     pub expires_at: String,
     pub user_id: String,
+}
+
+impl Default for AuthResponse {
+    fn default() -> Self {
+        Self {
+            token: String::new(),
+            expires_at: String::new(),
+            user_id: String::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -350,6 +398,30 @@ impl SentioApiClient {
             .context("Health check request failed")?;
 
         Ok(response.status().is_success())
+    }
+
+    /// Check API key validity and get username
+    pub async fn check_key(&self, host: &str, api_key: &str) -> Result<CheckKeyResponse> {
+        let check_api_key_url = format!("{}/api/v1/processors/check_key", host);
+
+        let req_builder = self
+            .client
+            .get(&check_api_key_url)
+            .header("api-key", api_key);
+
+        let response = self.execute_with_retry(req_builder).await?;
+
+        if response.status().is_success() {
+            let check_response: CheckKeyResponse = response
+                .json()
+                .await
+                .context("Failed to parse check key response")?;
+            Ok(check_response)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow!("Check key failed with status {}: {}", status, error_text))
+        }
     }
 
     /// Get API client configuration

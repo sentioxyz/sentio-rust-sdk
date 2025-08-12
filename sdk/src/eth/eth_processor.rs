@@ -1,11 +1,12 @@
 use crate::eth::context::EthContext;
-use crate::core::{BaseProcessor, PluginRegister};
+use crate::core::BaseProcessor;
 use chrono::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use crate::{AddressType, EthFetchConfig, EthPlugin, Server};
 
+#[derive(Clone)]
 pub struct EthBindOptions {
     pub address: String,
     /// Optional, if not set, then use eth mainnet
@@ -58,6 +59,7 @@ impl EthBindOptions {
     }
 }
 
+#[derive(Clone)]
 pub enum TimeOrBlock {
     Block(u64),
     Time(DateTime<Utc>),
@@ -84,17 +86,18 @@ pub struct OnEventOption {
 
 pub trait EthOnEvent {
     fn on_event<F>(
-        &mut self,
+        self,
         handler: fn(RawEvent, EthContext) -> F,
         filter: Vec<EventFilter>,
         options: Option<OnEventOption>,
-    ) -> &mut Self
+    ) -> Self
     where
         F: Future<Output = ()> + Send + 'static;
 }
 
 type AsyncEventHandler = Arc<dyn Fn(RawEvent, EthContext) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+#[derive(Clone)]
 pub(crate) struct EventHandler {
     pub(crate) handler: AsyncEventHandler,
     pub(crate) filters: Vec<EventFilter>,
@@ -113,6 +116,7 @@ impl EventHandler {
     }
 }
 
+#[derive(Clone)]
 pub struct EthProcessor {
     pub(crate) options: EthBindOptions,
     pub(crate) event_handlers: Vec<EventHandler>,
@@ -120,40 +124,22 @@ pub struct EthProcessor {
 
 
 impl EthProcessor {
-    /// Create a new EthProcessor for testing purposes
-    #[cfg(test)]
-    pub fn new(options: EthBindOptions) -> Self {
+    /// Create a new EthProcessor for a specific contract address
+    pub fn new() -> Self {
         Self {
-            options,
+            options: EthBindOptions::new(""), // Empty address to be set later in bind
             event_handlers: Vec::new(),
         }
     }
 
-    /// Create a new EthProcessor bound to a specific contract address
-    /// Uses a callback approach to handle the processor configuration
-    /// Returns the configured processor for manual registration
-    pub fn bind<F>(options: EthBindOptions, callback: F) -> Self
-    where
-        F: FnOnce(&mut EthProcessor)
-    {
-        let mut processor = Self {
-            options,
-            event_handlers: Vec::new(),
-        };
-        
-        // Call the callback to configure the processor
-        callback(&mut processor);
-        
-        processor
+    /// Bind this processor to a server with the given options
+    /// This consumes the processor and registers it with the server
+    pub fn bind(mut self, server: &Server, options: EthBindOptions) {
+        self.options = options;
+        server.register_processor::<Self, EthPlugin>(self);
     }
 
-    /// Register this processor with the server's plugin manager
-    /// This is an async method that should be called after bind()
-    pub async fn register_with_server(self, server: &Server) {
-        let mut plugin_manager = server.plugin_manager.write().await;
-        let eth_plugin = plugin_manager.plugin::<EthPlugin>();
-        eth_plugin.register_processor(self);
-    }
+
 
     /// Get the number of registered event handlers
     pub fn handler_count(&self) -> usize {
@@ -225,11 +211,11 @@ impl BaseProcessor for EthProcessor {
 
 impl EthOnEvent for EthProcessor {
     fn on_event<F>(
-        &mut self,
+        mut self,
         handler: fn(RawEvent, EthContext) -> F,
         filters: Vec<EventFilter>,
         options: Option<OnEventOption>,
-    ) -> &mut Self
+    ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {

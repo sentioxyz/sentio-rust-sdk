@@ -21,7 +21,7 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             skip_validation: false,
-            target: "x86_64-unknown-linux-gnu".to_string(),
+            target: "x86_64-unknown-linux-musl".to_string(),
             optimization_level: "release".to_string(),
             features: vec![],
             verbose: false,
@@ -157,19 +157,7 @@ pre-build = [
 
     /// Get protoc installation commands for the given target
     fn get_protoc_install_commands_for_target(&self, target: &str) -> Vec<String> {
-        if target.contains("musl") {
-            // Alpine-based containers (musl) - download binary directly
-            vec![
-                "apk update".to_string(),
-                "apk add --no-cache curl unzip".to_string(),
-                "mkdir -p /usr/local".to_string(),
-                "curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v31.1/protoc-31.1-linux-x86_64.zip".to_string(),
-                "unzip protoc-31.1-linux-x86_64.zip -d /usr/local".to_string(),
-                "chmod +x /usr/local/bin/protoc".to_string(),
-                "rm protoc-31.1-linux-x86_64.zip".to_string(),
-                "protoc --version".to_string(),
-            ]
-        } else if target.contains("linux") {
+        if target.contains("linux") {
             // Debian/Ubuntu-based containers (glibc) - download binary directly
             vec![
                 "apt-get update".to_string(),
@@ -194,19 +182,6 @@ pre-build = [
         // Determine if we need cross-compilation
         let use_cross = self.should_use_cross();
 
-        // If using cross, ensure Cross.toml is configured for protoc
-        if use_cross {
-            let cross_toml_path = self
-                .ensure_cross_toml_configured(project_path, options.verbose)
-                .await?;
-
-            // Set CROSS_CONFIG environment variable to point to the Cross.toml file
-            std::env::set_var("CROSS_CONFIG", &cross_toml_path);
-            if options.verbose {
-                println!("Set CROSS_CONFIG to: {}", cross_toml_path.display());
-            }
-        }
-
         let mut cmd = if use_cross {
             println!("Using cross for cross-compilation");
             TokioCommand::new("cross")
@@ -218,6 +193,19 @@ pre-build = [
             .arg("--target")
             .arg(&self.target)
             .current_dir(project_path);
+
+        // If using cross, ensure Cross.toml is configured for protoc
+        if use_cross {
+            let mut cross_toml_path = self
+                .ensure_cross_toml_configured(project_path, options.verbose)
+                .await?;
+            cross_toml_path = cross_toml_path.canonicalize()?;
+            // Set CROSS_CONFIG environment variable to point to the Cross.toml file
+            cmd.env("CROSS_CONFIG", &cross_toml_path);
+            if options.verbose {
+                println!("Set CROSS_CONFIG to: {}", cross_toml_path.display());
+            }
+        }
 
         // Add optimization level
         if options.optimization_level == "release" {
@@ -250,7 +238,7 @@ pre-build = [
     }
 
     /// Locate the built binary
-    async fn locate_binary(&self, project_path: &Path, options: &BuildOptions) -> Result<PathBuf> {
+    pub async fn locate_binary(&self, project_path: &Path, options: &BuildOptions) -> Result<PathBuf> {
         // Check project-specific target directory first
         let project_target_dir = project_path.join("target");
 

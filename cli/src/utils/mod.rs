@@ -5,3 +5,5 @@ pub mod storage;
 pub mod validator;
 pub mod test_runner;
 pub mod tool_validator;
+pub mod host_config;
+pub mod oauth;

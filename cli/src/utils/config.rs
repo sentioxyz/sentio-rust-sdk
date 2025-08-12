@@ -32,18 +32,10 @@ pub struct BuildConfig {
     pub features: Vec<String>,
 }
 
-/// Global configuration for user-wide settings
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GlobalConfig {
-    pub api_endpoint: Option<String>,
-    pub default_network: Option<String>,
-    pub build_settings: Option<BuildConfig>,
-}
 
-/// Configuration manager that handles loading and merging configurations
+/// Configuration manager that handles loading project configurations
 pub struct ConfigManager {
     project_config: Option<SentioConfig>,
-    global_config: Option<GlobalConfig>,
     project_path: PathBuf,
 }
 
@@ -69,15 +61,6 @@ impl Default for SentioConfig {
     }
 }
 
-impl Default for GlobalConfig {
-    fn default() -> Self {
-        Self {
-            api_endpoint: None,
-            default_network: Some("ethereum".to_string()),
-            build_settings: Some(BuildConfig::default()),
-        }
-    }
-}
 
 impl SentioConfig {
     /// Load configuration from a specific path
@@ -187,75 +170,18 @@ impl SentioConfig {
     }
 }
 
-impl GlobalConfig {
-    /// Get the global config directory path
-    fn get_global_config_dir() -> Result<PathBuf> {
-        let home_dir =
-            dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
-
-        Ok(home_dir.join(".sentio"))
-    }
-
-    /// Get the global config file path
-    fn get_global_config_path() -> Result<PathBuf> {
-        Ok(Self::get_global_config_dir()?.join("config.yaml"))
-    }
-
-    /// Load global configuration
-    pub fn load() -> Result<Self> {
-        let config_path = Self::get_global_config_path()?;
-
-        if !config_path.exists() {
-            return Ok(Self::default());
-        }
-
-        let content = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read global config: {}", config_path.display()))?;
-
-        let config: GlobalConfig = serde_yaml::from_str(&content)
-            .with_context(|| format!("Failed to parse global config: {}", config_path.display()))?;
-
-        Ok(config)
-    }
-
-    /// Save global configuration
-    pub fn save(&self) -> Result<()> {
-        let config_dir = Self::get_global_config_dir()?;
-        let config_path = Self::get_global_config_path()?;
-
-        // Create config directory if it doesn't exist
-        fs::create_dir_all(&config_dir).with_context(|| {
-            format!(
-                "Failed to create config directory: {}",
-                config_dir.display()
-            )
-        })?;
-
-        let content =
-            serde_yaml::to_string(self).context("Failed to serialize global configuration")?;
-
-        fs::write(&config_path, content)
-            .with_context(|| format!("Failed to write global config: {}", config_path.display()))?;
-
-        Ok(())
-    }
-}
 
 impl ConfigManager {
     /// Create a new configuration manager for a project
     pub fn new<P: AsRef<Path>>(project_path: P) -> Self {
         Self {
             project_config: None,
-            global_config: None,
             project_path: project_path.as_ref().to_path_buf(),
         }
     }
 
-    /// Load all configurations with proper precedence
+    /// Load project configuration
     pub fn load(&mut self) -> Result<()> {
-        // Load global config
-        self.global_config = Some(GlobalConfig::load().unwrap_or_default());
-
         // Load project config if it exists
         if self.project_path.join("sentio.yaml").exists() {
             self.project_config = Some(SentioConfig::load_from_path(&self.project_path)?);
@@ -270,24 +196,6 @@ impl ConfigManager {
             .project_config
             .clone()
             .unwrap_or_else(|| SentioConfig::default());
-
-        // Apply global config defaults if project config is missing values
-        if let Some(global) = &self.global_config {
-            if let Some(default_network) = &global.default_network {
-                if config.target_network.is_empty() {
-                    config.target_network = default_network.clone();
-                }
-            }
-
-            if let Some(build_settings) = &global.build_settings {
-                if config.build.target.is_empty() {
-                    config.build.target = build_settings.target.clone();
-                }
-                if config.build.optimization_level.is_empty() {
-                    config.build.optimization_level = build_settings.optimization_level.clone();
-                }
-            }
-        }
 
         // Apply environment variable overrides
         if let Ok(target_network) = env::var("SENTIO_TARGET_NETWORK") {
@@ -311,10 +219,6 @@ impl ConfigManager {
         self.project_config.as_ref()
     }
 
-    /// Get the global configuration
-    pub fn get_global_config(&self) -> Option<&GlobalConfig> {
-        self.global_config.as_ref()
-    }
 
     /// Save the current project configuration
     pub fn save_project_config(&self, config: &SentioConfig) -> Result<()> {
@@ -500,20 +404,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_global_config_operations() {
-        let global_config = GlobalConfig {
-            api_endpoint: Some("https://api.sentio.xyz".to_string()),
-            default_network: Some("ethereum".to_string()),
-            build_settings: Some(BuildConfig::default()),
-        };
-
-        let yaml_str = serde_yaml::to_string(&global_config).unwrap();
-        let deserialized: GlobalConfig = serde_yaml::from_str(&yaml_str).unwrap();
-
-        assert_eq!(global_config.api_endpoint, deserialized.api_endpoint);
-        assert_eq!(global_config.default_network, deserialized.default_network);
-    }
 
     #[test]
     fn test_config_manager() {

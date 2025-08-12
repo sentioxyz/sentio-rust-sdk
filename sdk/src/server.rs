@@ -45,6 +45,23 @@ impl Server {
         }
     }
 
+    /// Register a processor with the appropriate plugin
+    /// This method uses tokio runtime to handle async operations synchronously
+    pub fn register_processor<T, P>(&self, processor: T)
+    where
+        T: crate::core::BaseProcessor + 'static,
+        P: crate::core::plugin::PluginRegister<T> + crate::core::plugin::FullPlugin + Default + 'static,
+    {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let plugin_manager_arc = self.plugin_manager.clone();
+        
+        rt.block_on(async move {
+            let mut plugin_manager = plugin_manager_arc.write().await;
+            let plugin = plugin_manager.plugin::<P>();
+            plugin.register_processor(processor);
+        });
+    }
+
     /// Initialize logging based on debug flag
     fn init_logging(debug: bool) {
         let level = if debug { "debug" } else { "info" };

@@ -14,7 +14,7 @@ use crate::processor::{
 
 /// Command line arguments for the Sentio server
 #[derive(Parser, Debug, Clone)]
-#[command(name = "sentio-server")]
+#[command(name = "sentio-processor")]
 #[command(about = "Sentio Processor gRPC Server")]
 pub struct ServerArgs {
     /// Port to listen on
@@ -28,6 +28,10 @@ pub struct ServerArgs {
     /// Host address to bind to
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
+
+    /// Additional unrecognized arguments
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub extra_args: Vec<String>,
 }
 
 /// Sentio Processor gRPC Server

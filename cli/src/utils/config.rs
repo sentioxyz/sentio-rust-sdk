@@ -42,7 +42,7 @@ pub struct ConfigManager {
 impl Default for BuildConfig {
     fn default() -> Self {
         Self {
-            target: "x86_64-unknown-linux-gnu".to_string(),
+            target: "x86_64-unknown-linux-musl".to_string(),
             optimization_level: "release".to_string(),
             features: vec![],
         }
@@ -286,7 +286,7 @@ mod tests {
                 added_at: "2024-01-01T00:00:00Z".to_string(),
             }],
             build: BuildConfig {
-                target: "x86_64-unknown-linux-gnu".to_string(),
+                target: "x86_64-unknown-linux-musl".to_string(),
                 optimization_level: "release".to_string(),
                 features: vec!["default".to_string()],
             },

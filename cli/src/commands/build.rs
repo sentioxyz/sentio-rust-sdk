@@ -594,7 +594,7 @@ version: 0.1.0
 target_network: ethereum
 contracts: []
 build:
-  target: x86_64-unknown-linux-gnu
+  target: x86_64-unknown-linux-musl
   optimization_level: release
   features: []
 "#;
@@ -607,7 +607,7 @@ build:
     fn test_build_options_default() {
         let options = BuildOptions::default();
         assert!(!options.skip_validation);
-        assert_eq!(options.target, "x86_64-unknown-linux-gnu");
+        assert_eq!(options.target, "x86_64-unknown-linux-musl");
         assert_eq!(options.optimization_level, "release");
         assert!(options.features.is_empty());
         assert!(!options.verbose);
@@ -626,13 +626,13 @@ build:
 
     #[test]
     fn test_cross_compiler_new() {
-        let compiler = CrossCompiler::new("x86_64-unknown-linux-gnu".to_string());
-        assert_eq!(compiler.target, "x86_64-unknown-linux-gnu");
+        let compiler = CrossCompiler::new("x86_64-unknown-linux-musl".to_string());
+        assert_eq!(compiler.target, "x86_64-unknown-linux-musl");
     }
 
     #[tokio::test]
     async fn test_cross_compiler_check_target_installed() {
-        let compiler = CrossCompiler::new("x86_64-unknown-linux-gnu".to_string());
+        let compiler = CrossCompiler::new("x86_64-unknown-linux-musl".to_string());
 
         // This test might fail in CI environments without rustup
         // In a real scenario, you'd mock the command execution
@@ -721,7 +721,7 @@ build:
     #[tokio::test]
     async fn test_cross_compiler_locate_binary_missing_cargo_toml() {
         let temp_dir = TempDir::new().unwrap();
-        let compiler = CrossCompiler::new("x86_64-unknown-linux-gnu".to_string());
+        let compiler = CrossCompiler::new("x86_64-unknown-linux-musl".to_string());
         let options = BuildOptions::default();
 
         let result = compiler.locate_binary(temp_dir.path(), &options).await;
@@ -739,7 +739,7 @@ build:
         // Create invalid Cargo.toml
         fs::write(temp_dir.path().join("Cargo.toml"), "invalid toml content").unwrap();
 
-        let compiler = CrossCompiler::new("x86_64-unknown-linux-gnu".to_string());
+        let compiler = CrossCompiler::new("x86_64-unknown-linux-musl".to_string());
         let options = BuildOptions::default();
 
         let result = compiler.locate_binary(temp_dir.path(), &options).await;
@@ -766,7 +766,7 @@ path = "src/main.rs"
 "#;
         fs::write(temp_dir.path().join("Cargo.toml"), cargo_toml).unwrap();
 
-        let compiler = CrossCompiler::new("x86_64-unknown-linux-gnu".to_string());
+        let compiler = CrossCompiler::new("x86_64-unknown-linux-musl".to_string());
         let options = BuildOptions::default();
 
         let result = compiler.locate_binary(temp_dir.path(), &options).await;

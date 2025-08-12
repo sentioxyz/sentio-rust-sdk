@@ -434,14 +434,12 @@ impl UploadCommand {
         }
 
         let status: ProcessorsResponse = response.json().await?;
-        let found = status.processors.iter().find(|p| {
-            p.version == version && (p.version_state == "ACTIVE" || p.version_state == "PENDING")
-        });
+        let found = status.processors.iter().find(|p| p.version == version);
 
-        if found.is_some() {
+        if let Some(processor) = found {
             if !config.silent_overwrite {
                 let confirmed = Confirm::new()
-                    .with_prompt(&format!("Continue from version {}?", version))
+                    .with_prompt(&format!("Continue from version {} (status: {})?", version, processor.version_state))
                     .interact()?;
 
                 if !confirmed {

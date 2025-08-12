@@ -443,7 +443,7 @@ version: 0.1.0
 target_network: ethereum
 contracts: []
 build:
-  target: x86_64-unknown-linux-gnu
+  target: x86_64-unknown-linux-musl
   optimization_level: release
   features: []
 "#;

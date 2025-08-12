@@ -26,7 +26,7 @@ pub struct ServerArgs {
     pub debug: bool,
 
     /// Host address to bind to
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
 
     /// Additional unrecognized arguments
@@ -105,15 +105,21 @@ impl Server {
 
         info!("Starting Sentio Processor server on {}", addr);
         debug!("Server configuration: {:?}", args);
+        info!("gRPC compression enabled: gzip");
         // Note: We can't easily get processor count here without blocking on async lock
         // This will be logged during init() call instead
         info!("Starting server with plugin manager initialized");
+        info!("gRPC compression enabled: gzip");
 
         // Create and block on the Tokio runtime
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             TonicServer::builder()
-                .add_service(TonicProcessorV3Server::new(self))
+                .add_service(
+                    TonicProcessorV3Server::new(self)
+                        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                        .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+                )
                 .serve(addr)
                 .await
         })?;
@@ -153,12 +159,17 @@ impl Server {
             addr
         );
         debug!("Server configuration: {:?}", args);
+        info!("gRPC compression enabled: gzip");
 
         // Create and block on the Tokio runtime
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             TonicServer::builder()
-                .add_service(TonicProcessorV3Server::new(self))
+                .add_service(
+                    TonicProcessorV3Server::new(self)
+                        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                        .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+                )
                 .serve_with_shutdown(addr, shutdown_signal)
                 .await
         })?;
@@ -180,9 +191,14 @@ impl Server {
 
         info!("Starting Sentio Processor server on {}", addr);
         debug!("Server configuration: {:?}", args);
+        info!("gRPC compression enabled: gzip");
 
         TonicServer::builder()
-            .add_service(TonicProcessorV3Server::new(self))
+            .add_service(
+                TonicProcessorV3Server::new(self)
+                    .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                    .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+            )
             .serve(addr)
             .await?;
 
@@ -209,9 +225,14 @@ impl Server {
             addr
         );
         debug!("Server configuration: {:?}", args);
+        info!("gRPC compression enabled: gzip");
 
         TonicServer::builder()
-            .add_service(TonicProcessorV3Server::new(self))
+            .add_service(
+                TonicProcessorV3Server::new(self)
+                    .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                    .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+            )
             .serve_with_shutdown(addr, shutdown_signal)
             .await?;
 

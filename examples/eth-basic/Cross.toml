@@ -6,8 +6,8 @@ passthrough = [
     "RUST_LOG",
 ]
 
-# Configuration for x86_64-unknown-linux-gnu
-[target.x86_64-unknown-linux-gnu]
+# Configuration for x86_64-unknown-linux-musl
+[target.x86_64-unknown-linux-musl]
 pre-build = [
     "apt-get update",
     "apt-get install -y curl unzip",

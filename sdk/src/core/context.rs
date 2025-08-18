@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 // Re-export EventLogger trait from event_logger module
 pub use crate::core::event_logger::EventLogger;
+// Re-export metrics types
+pub use crate::core::metrics::{Meter, Counter, Gauge, MetricOptions, NumberValue};
 
 /// Labels type for metadata - equivalent to TypeScript Labels
 pub type Labels = HashMap<String, String>;
@@ -32,6 +34,9 @@ pub trait Context: Send + Sync {
 
 
     fn get_metadata(&self) -> &RwLock<MetaData>;
+
+    /// Get the meter for creating metrics (counters, gauges)
+    fn meter(&self) -> &Meter;
 
     /// Get metadata for a given name and labels
     async fn address(&self) -> String {
@@ -84,6 +89,8 @@ pub struct BaseContext {
     pub metadata: Arc<RwLock<MetaData>>,
     /// Event logger instance
     pub event_logger: crate::core::event_logger::DefaultEventLogger,
+    /// Meter for creating metrics (counters, gauges)
+    pub meter: Meter,
 }
 
 impl Clone for BaseContext {
@@ -91,6 +98,7 @@ impl Clone for BaseContext {
         Self {
             metadata: self.metadata.clone(),
             event_logger: self.event_logger.clone(),
+            meter: self.meter.clone(),
         }
     }
 }
@@ -117,6 +125,7 @@ impl BaseContext {
         Self {
             metadata: metadata_lock,
             event_logger,
+            meter: Meter::new(),
         }
     }
     
@@ -149,6 +158,7 @@ impl BaseContext {
         Self {
             metadata: metadata_lock,
             event_logger,
+            meter: Meter::new(),
         }
     }
 }

@@ -1,5 +1,5 @@
 use tokio::sync::RwLock;
-use crate::core::{Context, BaseContext, EventLogger, MetaData};
+use crate::core::{Context, BaseContext, EventLogger, MetaData, Meter};
 
 #[derive(Clone)]
 pub struct EthContext {
@@ -56,5 +56,9 @@ impl Context for EthContext {
     
     fn get_metadata(&self) -> &RwLock<MetaData> {
         self.base_context.metadata.as_ref()
+    }
+
+    fn meter(&self) -> &Meter {
+        &self.base_context.meter
     }
 }

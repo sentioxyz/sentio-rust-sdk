@@ -80,9 +80,13 @@ mod tests {
         // Test that we can process the binding directly without copying
         let pm = server.plugin_manager.read().await;
         
+        // Create a mock RuntimeContext for testing
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let runtime_context = crate::core::RuntimeContext::new(tx, 1);
+        
         // This should work without any intermediate DataBinding creation
         // The process method takes &DataBinding, so no copy is made
-        let result = pm.process(&binding).await;
+        let result = pm.process(&binding, runtime_context).await;
         
         // We expect this to fail since no plugins are registered, but the important
         // thing is that it compiles and doesn't require copying the binding

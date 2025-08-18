@@ -193,8 +193,8 @@ impl EthPlugin {
                 topics: vec![],            // TODO: Extract from raw_log JSON
             };
             
-            // Create context
-            let context = crate::eth::context::EthContext::default();
+            // Create context with event logger
+            let context = crate::eth::context::EthContext::new();
             
             // Call the event handler
             (event_handler.handler)(raw_event, context).await;

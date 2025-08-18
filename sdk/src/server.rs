@@ -12,6 +12,7 @@ use crate::processor::{
     ProcessStreamRequest, ProcessStreamResponseV2,
 };
 
+
 /// Command line arguments for the Sentio server
 #[derive(Parser, Debug, Clone)]
 #[command(name = "sentio-processor")]
@@ -385,10 +386,12 @@ impl ProcessorV3 for Server {
                                 process_stream_request::Value::Binding(binding) => {
                                     debug!("Processing binding for chain_id: {}", binding.chain_id);
 
-                                    // Use PluginManager's process method directly with the binding
-                                    // No need to create a new DataBinding since binding is already the right type
+                                    // Create RuntimeContext with the tx clone for event logging
+                                    let runtime_context = crate::core::RuntimeContext::new(tx_clone.clone(), process_id);
+
+                                    // Use PluginManager's process method with the binding and context
                                     let pm = plugin_manager.read().await;
-                                    match pm.process(&binding).await {
+                                    match pm.process(&binding, runtime_context).await {
                                         Ok(result) => {
                                             debug!(
                                                 "Successfully processed binding for chain '{}'",

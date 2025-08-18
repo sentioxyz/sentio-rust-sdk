@@ -103,23 +103,29 @@ impl Plugin for EthPlugin {
                     processor_idx,
                     handle_idx,
                 );
-                let log_config = LogHandlerConfig {
+                let mut log_config = LogHandlerConfig {
                     handler_id,
                     filters: vec![],
                     fetch_config: handler.fetch_config(),
                     handler_name: handler.name.clone().unwrap_or("".to_string())
                 };
 
-                for filter in handler.filters.iter() {
-                    let mut log_filter = LogFilter::default();
-                    if let Some(contract) = &contract_config.contract {
-                        let mut address = &contract.address;
-                        if let Some(addr) = &filter.address {
-                            address = addr
+                if handler.filters.len() == 0 {
+                    // add empty filter for all events
+                    log_config.filters.push(LogFilter::default());
+                } else {
+                    for filter in handler.filters.iter() {
+                        let mut log_filter = LogFilter::default();
+                        if let Some(contract) = &contract_config.contract {
+                            let mut address = &contract.address;
+                            if let Some(addr) = &filter.address {
+                                address = addr
+                            }
+                            log_filter.address_or_type = Some(AddressOrType::Address(address.clone()));
                         }
-                        log_filter.address_or_type = Some(AddressOrType::Address(address.clone()));
+                        log_filter.topics.push(Topic { hashes: filter.topics.clone() });
+                        log_config.filters.push(log_filter);
                     }
-                    log_filter.topics.push(Topic{ hashes: filter.topics.clone()})
                 }
                 contract_config.log_configs.push(log_config);
             }
@@ -266,15 +272,15 @@ mod tests {
             .with_network("ethereum")
             .with_name("test-processor");
 
-        let mut processor = EthProcessor::new(options);
+        let mut processor = EthProcessor::new();
+        processor.options = options;
         
-        // Add a test event handler so the configure method will register it
-        processor.on_event(|_event, _ctx| async {
+        let processor = processor.on_event(|_event, _ctx| async {
             // Test event handler
         }, vec![], None);
-
+        
         // Register the processor
-        plugin.processors.push(Box::new(processor));
+        plugin.register_processor(processor);
 
         // Test configure method with no chain filter
         let request = ConfigureHandlersRequest {

@@ -82,7 +82,7 @@ mod tests {
         
         // Create a mock RuntimeContext for testing
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let runtime_context = crate::core::RuntimeContext::new(tx, 1);
+        let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx, 1);
         
         // This should work without any intermediate DataBinding creation
         // The process method takes &DataBinding, so no copy is made

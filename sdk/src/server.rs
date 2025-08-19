@@ -386,8 +386,8 @@ impl ProcessorV3 for Server {
                                 process_stream_request::Value::Binding(binding) => {
                                     debug!("Processing binding for chain_id: {}", binding.chain_id);
 
-                                    // Create RuntimeContext with the tx clone for event logging
-                                    let runtime_context = crate::core::RuntimeContext::new(tx_clone.clone(), process_id);
+                                    // Create RuntimeContext with the tx clone for event logging and empty metadata
+                                    let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_clone.clone(), process_id);
 
                                     // Use PluginManager's process method with the binding and context
                                     let pm = plugin_manager.read().await;

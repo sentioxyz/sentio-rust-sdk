@@ -169,7 +169,7 @@ impl EthPlugin {
         debug!("Processing ETH log for chain_id: {}", data.chain_id);
         
         // Extract ETH log data
-        let _eth_log_data = match &data.data {
+        let eth_log_data = match &data.data {
             Some(d) => match &d.value {
                 Some(crate::processor::data::Value::EthLog(log_data)) => log_data,
                 _ => return Err(anyhow::anyhow!("Expected ETH log data but got different type")),
@@ -184,12 +184,12 @@ impl EthPlugin {
             let (processor, event_handler) = self.find_handler(&data.chain_id, handler_id)?;
             
             debug!("Calling ETH log handler for processor: {}", processor.name());
-            
+
             // Create RawEvent from eth_log_data
             // For now, use placeholder values until we can properly parse eth_log_data.raw_log
             let raw_event = crate::eth::eth_processor::RawEvent {
                 address: "0x".to_string(), // TODO: Extract from raw_log JSON
-                data: "0x".to_string(),    // TODO: Extract from raw_log JSON  
+                data: "0x".to_string(),    // TODO: Extract from raw_log JSON
                 topics: vec![],            // TODO: Extract from raw_log JSON
             };
             

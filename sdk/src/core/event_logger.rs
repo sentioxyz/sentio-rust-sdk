@@ -1,6 +1,6 @@
 use anyhow::Result;
 use tracing::debug;
-use crate::{LogLevel, processor::{TimeseriesResult, RecordMetaData}};
+use crate::{LogLevel, processor::TimeseriesResult};
 use std::collections::HashMap;
 
 /// Attribute value that can be stored in events
@@ -143,63 +143,39 @@ impl From<Vec<AttributeValue>> for AttributeValue {
     }
 }
 
-/// Event logger trait for emitting events through the runtime context
-#[tonic::async_trait]
-pub trait EventLogger: Send + Sync {
-    /// Emit an event
-    async fn emit(&self, event: &Event) -> Result<()>;
+/// Pure event logger struct that works with runtime context
+#[derive(Debug, Clone)]
+pub struct EventLogger {
+    // Pure struct with no state
 }
 
-/// Default event logger implementation that uses the runtime context
-#[derive(Clone)]
-pub struct DefaultEventLogger {
-    /// Reference to metadata lock for accessing context information
-    metadata_lock: Option<std::sync::Arc<tokio::sync::RwLock<super::MetaData>>>,
-}
-
-impl DefaultEventLogger {
+impl EventLogger {
+    /// Create a new EventLogger
     pub fn new() -> Self {
-        Self { 
-            metadata_lock: None,
-        }
+        Self {}
     }
     
-    /// Create a new DefaultEventLogger with metadata lock
-    pub fn with_metadata_lock(metadata_lock: std::sync::Arc<tokio::sync::RwLock<super::MetaData>>) -> Self {
-        Self {
-            metadata_lock: Some(metadata_lock),
-        }
+    /// Emit an event using the runtime context
+    pub async fn emit(&self, event: &Event) -> Result<()> {
+        use super::RUNTIME_CONTEXT;
+        let timeseries_result = self.event_to_timeseries_result(event)?;
+        
+        // Get runtime context with lightweight clone (only Arc pointers are cloned)
+        let ctx = RUNTIME_CONTEXT.try_with(|ctx| ctx.clone())
+            .map_err(|_| anyhow::anyhow!("Runtime context not available - make sure this is called within a processor handler"))?;
+        
+        ctx.send_timeseries_result(event.get_name(), timeseries_result).await
     }
     
-    /// Convert Event to TimeseriesResult following TypeScript normalization patterns
-    async fn event_to_timeseries_result(&self, event: &Event) -> Result<TimeseriesResult> {
+    /// Convert Event to TimeseriesResult using runtime context metadata
+    fn event_to_timeseries_result(&self, event: &Event) -> Result<TimeseriesResult> {
         use crate::processor::timeseries_result::TimeseriesType;
         
         // Convert event to RichStruct
         let rich_struct = self.event_to_rich_struct(event)?;
         
-        // Get metadata from context if available
-        let metadata = if let Some(metadata_lock) = &self.metadata_lock {
-            let ctx_metadata = metadata_lock.read().await;
-            let record_metadata = RecordMetaData {
-                address: ctx_metadata.address.clone(),
-                contract_name: ctx_metadata.contract_name.clone(),
-                block_number: ctx_metadata.block_number,
-                transaction_hash: ctx_metadata.transaction_hash.clone(),
-                chain_id: ctx_metadata.chain_id.clone(),
-                transaction_index: ctx_metadata.transaction_index,
-                log_index: ctx_metadata.log_index,
-                name: event.get_name().to_string(),
-                labels: ctx_metadata.base_labels.clone(),
-            };
-            
-            Some(record_metadata)
-        } else {
-            None
-        };
-        
         let timeseries_result = TimeseriesResult {
-            metadata,
+            metadata: None,
             r#type: TimeseriesType::Event as i32,
             data: Some(rich_struct),
             runtime_info: None,
@@ -344,22 +320,8 @@ impl DefaultEventLogger {
     }
 }
 
-#[tonic::async_trait]
-impl EventLogger for DefaultEventLogger {
-    async fn emit(&self, event: &Event) -> Result<()> {
-        use crate::core::RUNTIME_CONTEXT;
-        
-        // Try to get the runtime context from task local storage
-        let runtime_context = RUNTIME_CONTEXT.try_with(|runtime_context| runtime_context.clone())
-            .map_err(|_| anyhow::anyhow!("No runtime context available for event logging"))?;
-        
-        // Convert event to TimeseriesResult
-        let timeseries_result = self.event_to_timeseries_result(event).await?;
-        
-        // Send to runtime context
-        runtime_context.send_timeseries_result(timeseries_result).await?;
-        
-        debug!("Emitted event: {}", event.get_name());
-        Ok(())
+impl Default for EventLogger {
+    fn default() -> Self {
+        Self::new()
     }
 }

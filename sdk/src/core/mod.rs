@@ -12,7 +12,7 @@ pub use handler_register::{HandlerInfo, HandlerRegister};
 pub use plugin::{Plugin, PluginRegister, AsyncPluginProcessor};
 pub use plugin_manager::PluginManager;
 pub use context::{Context, BaseContext, RuntimeContext, RUNTIME_CONTEXT, MetaData, Labels, Meter, Counter, Gauge, MetricOptions, NumberValue};
-pub use event_logger::{Event, AttributeValue, EventLogger, DefaultEventLogger};
+pub use event_logger::{Event, AttributeValue, EventLogger};
 
 
 pub(crate) const USER_PROCESSOR: &str = "user_processor";

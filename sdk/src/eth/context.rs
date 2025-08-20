@@ -6,6 +6,10 @@ pub struct EthContext {
 }
 
 impl EthContext {
+    
+}
+
+impl EthContext {
     /// Create a new EthContext with the default configuration
     pub fn new() -> Self {
         let base_context = BaseContext::new();
@@ -23,7 +27,8 @@ impl Default for EthContext {
 }
 
 impl Context for EthContext {
-    fn base_context(&self) -> &BaseContext {
-        &self.base_context
+    fn base_context(&mut self) -> &mut BaseContext {
+        &mut self.base_context
     }
+    
 }

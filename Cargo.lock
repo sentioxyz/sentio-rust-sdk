@@ -3863,6 +3863,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "ethers",
  "futures",
  "prost",
  "prost-types",

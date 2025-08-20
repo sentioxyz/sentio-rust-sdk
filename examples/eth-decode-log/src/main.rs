@@ -4,7 +4,6 @@ use std::env;
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use ethers::abi::{Event, ParamType, RawLog, Token};
-use ethers::types::H256;
 use tracing::{debug, info, warn};
 
 mod abi_client;
@@ -53,7 +52,7 @@ async fn main() -> Result<()> {
     // Create a processor that listens to all events (no filters)
     EthProcessor::new()
         .on_event(
-            process_log,
+process_log,
             Vec::new(), // Empty filters means listen to all events
             None,
         )
@@ -70,14 +69,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn process_log(
+fn process_log(
     event: RawEvent, 
-    _ctx: sentio_sdk::eth::context::EthContext,
-) {
+    _ctx: &sentio_sdk::eth::context::EthContext,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    async move {
     // Create a basic log identifier from the event itself
     let log_id = format!("{}_{}", 
-        event.address,
-        event.topics.get(0).unwrap_or(&"unknown".to_string())
+        format!("{:?}", event.log.address),
+        event.log.topics.get(0).map(|t| format!("{:?}", t)).unwrap_or_else(|| "unknown".to_string())
     );
     
     // Initialize ABI client with environment variables
@@ -96,9 +96,9 @@ async fn process_log(
                 block_number: 0,
                 block_hash: "".to_string(),
                 log_index: 0,
-                log_address: event.address.clone(),
-                data: event.data.clone(),
-                topics: event.topics.clone(),
+                log_address: format!("{:?}", event.log.address),
+                data: format!("{:?}", event.log.data),
+                topics: event.log.topics.iter().map(|t| format!("{:?}", t)).collect(),
                 args: decoded.args,
                 arg_key_mappings: decoded.arg_key_mappings,
                 signature: decoded.signature,
@@ -119,14 +119,15 @@ async fn process_log(
                 transaction_index: 0,
                 block_number: 0,
                 block_hash: "".to_string(),
-                log_address: event.address.clone(),
-                data: event.data.clone(),
-                topics: serde_json::to_string(&event.topics).unwrap_or_else(|_| "[]".to_string()),
+                log_address: format!("{:?}", event.log.address),
+                data: format!("{:?}", event.log.data),
+                topics: serde_json::to_string(&event.log.topics.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".to_string()),
                 error: e.to_string(),
             };
             
             warn!("Failed to decode log: {:?}", error_log);
         }
+    }
     }
 }
 
@@ -140,25 +141,27 @@ struct DecodedLog {
 }
 
 async fn decode_log(event: &RawEvent, abi_client: &AbiClient) -> Result<Option<DecodedLog>> {
-    if event.topics.is_empty() {
+    if event.log.topics.is_empty() {
         return Err(anyhow!("Log does not contain a valid signature topic"));
     }
     
-    let signature = &event.topics[0];
+    let signature = &format!("{:?}", event.log.topics[0]);
     
     // Try to get ABI from signature
-    match abi_client.get_abi_from_signature(signature, &event.address, None, None).await? {
+    match abi_client.get_abi_from_signature(signature, &format!("{:?}", event.log.address), None, None).await? {
         Some(abi_item) => {
             match parse_log_with_ethers(&abi_item, event) {
                 Ok(decoded) => Ok(Some(decoded)),
                 Err(e) => {
                     if e.to_string().contains("data out-of-bounds") || e.to_string().contains("insufficient") {
                         // Try again with topics and data
+                        let topics: Vec<String> = event.log.topics.iter().map(|t| format!("{:?}", t)).collect();
+                        let data = format!("{:?}", event.log.data);
                         match abi_client.get_abi_from_signature(
                             signature, 
-                            &event.address, 
-                            Some(&event.topics), 
-                            Some(&event.data)
+                            &format!("{:?}", event.log.address), 
+                            Some(&topics), 
+                            Some(&data)
                         ).await? {
                             Some(abi_item) => {
                                 let decoded = parse_log_with_ethers(&abi_item, event)?;
@@ -180,23 +183,11 @@ fn parse_log_with_ethers(abi_item: &str, event: &RawEvent) -> Result<DecodedLog>
     // Parse the ABI item as an Event
     let event_abi: Event = serde_json::from_str(abi_item)?;
     
-    // Convert topics from hex strings to H256
-    let mut topics = Vec::new();
-    for topic in &event.topics {
-        let clean_topic = topic.strip_prefix("0x").unwrap_or(topic);
-        let bytes = hex::decode(clean_topic).map_err(|e| anyhow!("Invalid topic hex: {}", e))?;
-        topics.push(H256::from_slice(&bytes));
-    }
+    // Use topics directly from the ethers Log structure
+    let topics = event.log.topics.clone();
     
-    // Convert data from hex string to bytes
-    let data = {
-        let clean_data = event.data.strip_prefix("0x").unwrap_or(&event.data);
-        if clean_data.is_empty() {
-            Vec::new()
-        } else {
-            hex::decode(clean_data).map_err(|e| anyhow!("Invalid data hex: {}", e))?
-        }
-    };
+    // Use data directly from the ethers Log structure
+    let data = event.log.data.to_vec();
     
     // Create RawLog for ethers
     let raw_log = RawLog {
@@ -209,7 +200,7 @@ fn parse_log_with_ethers(abi_item: &str, event: &RawEvent) -> Result<DecodedLog>
     
     // Extract information
     let event_name = event_abi.name.clone();
-    let signature = event.topics[0].clone(); // Use the original signature from topics
+    let signature = format!("{:?}", event.log.topics[0]); // Use the original signature from topics
     
     let mut arg_key_mappings = Vec::new();
     let mut arg_types = Vec::new();

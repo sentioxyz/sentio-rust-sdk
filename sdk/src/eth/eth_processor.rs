@@ -4,6 +4,8 @@ use chrono::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use ethers::types::Log;
+use ethers::abi::Log as DecodedLog;
 use crate::{AddressType, EthFetchConfig, EthPlugin, Server};
 
 #[derive(Clone)]
@@ -67,9 +69,8 @@ pub enum TimeOrBlock {
 
 #[derive(Clone)]
 pub struct RawEvent {
-    pub address: String,
-    pub data: String,
-    pub topics: Vec<String>,
+    pub log: Log,
+    pub decoded_log: Option<DecodedLog>
 }
 
 #[derive(Clone)]
@@ -81,13 +82,14 @@ pub struct EventFilter {
 
 #[derive(Clone)]
 pub struct OnEventOption {
-    fetch_config: Option<EthFetchConfig>
+    fetch_config: Option<EthFetchConfig>,
+    decode_log: bool,
 }
 
 pub trait EthOnEvent {
     fn on_event<F>(
         self,
-        handler: fn(RawEvent, EthContext) -> F,
+        handler: fn(RawEvent, &EthContext) -> F,
         filter: Vec<EventFilter>,
         options: Option<OnEventOption>,
     ) -> Self
@@ -95,7 +97,7 @@ pub trait EthOnEvent {
         F: Future<Output = ()> + Send + 'static;
 }
 
-type AsyncEventHandler = Arc<dyn Fn(RawEvent, EthContext) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type AsyncEventHandler = Arc<dyn Fn(RawEvent, &EthContext) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub(crate) struct EventHandler {
@@ -113,6 +115,11 @@ impl EventHandler {
             }
         }
         None
+    }
+
+    pub(crate) fn need_decode_log(&self) -> bool {
+        let opt = &self.options;
+        opt.is_some() && opt.as_ref().unwrap().decode_log
     }
 }
 
@@ -144,30 +151,6 @@ impl EthProcessor {
     /// Get the number of registered event handlers
     pub fn handler_count(&self) -> usize {
         self.event_handlers.len()
-    }
-
-    /// Process an event by calling all registered handlers
-    pub async fn process_event(&self, event: RawEvent, context: EthContext) {
-        use tracing::{error, debug};
-        
-        debug!("Processing event with {} handlers", self.event_handlers.len());
-        
-        for (idx, handler) in self.event_handlers.iter().enumerate() {
-            // TODO: Apply filter logic here
-            debug!("Calling handler {}", idx);
-            
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (handler.handler)(event.clone(), context.clone())
-            })) {
-                Ok(future) => {
-                    future.await;
-                    debug!("Handler {} completed successfully", idx);
-                }
-                Err(_) => {
-                    error!("Handler {} panicked during execution", idx);
-                }
-            }
-        }
     }
 
     /// Get a reference to the bind options
@@ -212,7 +195,7 @@ impl BaseProcessor for EthProcessor {
 impl EthOnEvent for EthProcessor {
     fn on_event<F>(
         mut self,
-        handler: fn(RawEvent, EthContext) -> F,
+        handler: fn(RawEvent, &EthContext) -> F,
         filters: Vec<EventFilter>,
         options: Option<OnEventOption>,
     ) -> Self

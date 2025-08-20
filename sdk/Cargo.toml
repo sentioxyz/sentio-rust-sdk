@@ -22,6 +22,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
 tonic-prost = "0.14.1"
+ethers = { version = "2.0", features = ["abigen", "rustls"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14.1"

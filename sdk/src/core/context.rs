@@ -12,7 +12,7 @@ pub use crate::core::metrics::{Counter, Gauge, Meter, MetricOptions, NumberValue
 pub type Labels = HashMap<String, String>;
 
 /// Metadata structure that contains context information for events and metrics
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MetaData {
     pub address: String,
     pub contract_name: String,
@@ -27,7 +27,7 @@ pub struct MetaData {
 /// Context trait that all user-facing contexts should implement
 pub trait Context: Send + Sync {
     /// Get the base context for creating loggers and meters
-    fn base_context(&self) -> &BaseContext;
+    fn base_context(&mut self) -> &mut BaseContext;
 
     /// Get metadata access through the runtime context
     fn metadata(&self) -> MetaData {
@@ -63,28 +63,31 @@ pub trait Context: Send + Sync {
     fn log_index(&self) -> i32 {
         self.metadata().log_index
     }
-}
 
-/// Base context struct that provides common functionality for all contexts
-/// This handles creating pure event loggers and meters
-pub struct BaseContext {
-    // BaseContext is now simplified - no metadata storage
-}
+    fn set_config_updated(&mut self, updated: bool) {
+        self.base_context().config_updated = updated
+    }
 
-impl Clone for BaseContext {
-    fn clone(&self) -> Self {
-        Self {}
+    fn stop_and_get_result(&mut self) -> crate::processor::ProcessResult {
+        self.base_context().stop_and_get_result()
     }
 }
+
+#[derive(Clone)]
+pub struct BaseContext {
+    config_updated: bool,
+}
+
+
 
 impl BaseContext {
     /// Create a new BaseContext
     pub fn new() -> Self {
-        Self {}
+        Self { config_updated: false }
     }
 
     /// Create a new pure Event Logger
-    pub fn event_logger(&self) -> crate::core::event_logger::EventLogger {
+    pub fn event_logger(&self) -> EventLogger {
         crate::core::event_logger::EventLogger::new()
     }
 
@@ -112,6 +115,17 @@ impl BaseContext {
     pub fn gauge_with_options(&self, name: &str, options: MetricOptions) -> Gauge {
         Gauge::with_options(name, options)
     }
+
+    pub(crate) fn stop_and_get_result(&self) -> crate::processor::ProcessResult {
+        let mut result = crate::processor::ProcessResult::default();
+        if self.config_updated {
+            result.states = Some(crate::processor::StateResult {
+                config_updated: true,
+                error: None,
+            })
+        }
+        result
+    }
 }
 
 impl Default for BaseContext {
@@ -129,7 +143,9 @@ pub struct RuntimeContext {
     pub process_id: i32,
     /// Metadata for this runtime context (Arc for lightweight cloning)
     pub metadata: std::sync::Arc<MetaData>,
-}
+
+ }
+
 
 impl RuntimeContext {
     /// Create a new RuntimeContext with the given event logger sender, process ID, and metadata

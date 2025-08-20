@@ -1,10 +1,15 @@
-use crate::core::{BaseProcessor, HandlerRegister, Plugin, PluginRegister, AsyncPluginProcessor};
 use crate::core::plugin::FullPlugin;
-use crate::eth::eth_processor::{EthProcessor, TimeOrBlock};
-use crate::processor::HandlerType;
-use crate::{ConfigureHandlersRequest, ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter, LogHandlerConfig, Topic};
-use tracing::debug;
+use crate::core::{AsyncPluginProcessor, BaseProcessor, Context, HandlerRegister, MetaData, Plugin, PluginRegister, RUNTIME_CONTEXT};
+use crate::eth::eth_processor::{EthProcessor, RawEvent, TimeOrBlock};
+use crate::eth::ParsedEthData;
 use crate::log_filter::AddressOrType;
+use crate::processor::HandlerType;
+use crate::{
+    ConfigureHandlersRequest, ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter,
+    LogHandlerConfig, Topic,
+};
+use anyhow;
+use tracing::debug;
 
 #[derive(Default)]
 pub struct EthPlugin {
@@ -44,7 +49,10 @@ impl Plugin for EthPlugin {
     }
 
     fn chain_ids(&self) -> Vec<String> {
-        self.processors.iter().map(|p| p.chain_id().to_string()).collect()
+        self.processors
+            .iter()
+            .map(|p| p.chain_id().to_string())
+            .collect()
     }
 
     fn name() -> &'static str
@@ -54,7 +62,11 @@ impl Plugin for EthPlugin {
         "eth-plugin"
     }
 
-    fn configure(&mut self, request: &ConfigureHandlersRequest, config: &mut ConfigureHandlersResponse) {
+    fn configure(
+        &mut self,
+        request: &ConfigureHandlersRequest,
+        config: &mut ConfigureHandlersResponse,
+    ) {
         debug!(
             "Configuring EthPlugin handlers for chain_id: {:?}",
             request.chain_id
@@ -107,7 +119,7 @@ impl Plugin for EthPlugin {
                     handler_id,
                     filters: vec![],
                     fetch_config: handler.fetch_config(),
-                    handler_name: handler.name.clone().unwrap_or("".to_string())
+                    handler_name: handler.name.clone().unwrap_or("".to_string()),
                 };
 
                 if handler.filters.len() == 0 {
@@ -121,9 +133,12 @@ impl Plugin for EthPlugin {
                             if let Some(addr) = &filter.address {
                                 address = addr
                             }
-                            log_filter.address_or_type = Some(AddressOrType::Address(address.clone()));
+                            log_filter.address_or_type =
+                                Some(AddressOrType::Address(address.clone()));
                         }
-                        log_filter.topics.push(Topic { hashes: filter.topics.clone() });
+                        log_filter.topics.push(Topic {
+                            hashes: filter.topics.clone(),
+                        });
                         log_config.filters.push(log_filter);
                     }
                 }
@@ -135,101 +150,201 @@ impl Plugin for EthPlugin {
     }
 
     fn can_handle_type(&self, handler_type: HandlerType) -> bool {
-        matches!(handler_type, 
-            HandlerType::EthLog | 
-            HandlerType::EthBlock | 
-            HandlerType::EthTrace | 
-            HandlerType::EthTransaction
+        matches!(
+            handler_type,
+            HandlerType::EthLog
+                | HandlerType::EthBlock
+                | HandlerType::EthTrace
+                | HandlerType::EthTransaction
         )
     }
 }
 
 impl EthPlugin {
-    fn find_handler(&self, chain_id: &str, handler_id: i32) -> anyhow::Result<(&EthProcessor, &crate::eth::eth_processor::EventHandler)> {
+    fn find_handler(
+        &self,
+        chain_id: &str,
+        handler_id: i32,
+    ) -> anyhow::Result<(&EthProcessor, &crate::eth::eth_processor::EventHandler)> {
         // Look up the handler information
-        let handler_info = self.handler_register.get_info(chain_id, handler_id)
-            .ok_or_else(|| anyhow::anyhow!("Handler {} not found for chain {}", handler_id, chain_id))?;
+        let handler_info = self
+            .handler_register
+            .get_info(chain_id, handler_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Handler {} not found for chain {}", handler_id, chain_id)
+            })?;
 
         let processor_idx = handler_info.processor_idx;
         let handler_idx = handler_info.handler_idx;
 
-        debug!("Found handler - processor_idx: {}, handler_idx: {}", processor_idx, handler_idx);
+        debug!(
+            "Found handler - processor_idx: {}, handler_idx: {}",
+            processor_idx, handler_idx
+        );
 
         // Get the processor and event handler
-        let processor = self.processors.get(processor_idx)
+        let processor = self
+            .processors
+            .get(processor_idx)
             .ok_or_else(|| anyhow::anyhow!("Processor index {} not found", processor_idx))?;
 
-        let event_handler = processor.event_handlers.get(handler_idx)
-            .ok_or_else(|| anyhow::anyhow!("Event handler index {} not found in processor {}", handler_idx, processor_idx))?;
+        let event_handler = processor.event_handlers.get(handler_idx).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Event handler index {} not found in processor {}",
+                handler_idx,
+                processor_idx
+            )
+        })?;
 
         Ok((processor.as_ref(), event_handler))
     }
 
-    async fn process_eth_log(&self, data: &crate::DataBinding) -> anyhow::Result<crate::ProcessResult> {
+    async fn process_eth_log(
+        &self,
+        data: &crate::DataBinding,
+    ) -> anyhow::Result<crate::ProcessResult> {
         debug!("Processing ETH log for chain_id: {}", data.chain_id);
-        
+
         // Extract ETH log data
         let eth_log_data = match &data.data {
             Some(d) => match &d.value {
                 Some(crate::processor::data::Value::EthLog(log_data)) => log_data,
-                _ => return Err(anyhow::anyhow!("Expected ETH log data but got different type")),
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Expected ETH log data but got different type"
+                    ))
+                }
             },
             None => return Err(anyhow::anyhow!("No data provided in DataBinding")),
         };
-        
+
+        // Parse all Ethereum data using ethers library
+        let parsed_data = ParsedEthData::from(eth_log_data);
+
+        let mut result = crate::ProcessResult::default();
         // Process each handler_id for ETH log
         for &handler_id in &data.handler_ids {
-            debug!("Processing ETH log handler_id: {} for chain: {}", handler_id, data.chain_id);
-            
-            let (processor, event_handler) = self.find_handler(&data.chain_id, handler_id)?;
-            
-            debug!("Calling ETH log handler for processor: {}", processor.name());
+            debug!(
+                "Processing ETH log handler_id: {} for chain: {}",
+                handler_id, data.chain_id
+            );
 
-            // Create RawEvent from eth_log_data
-            // For now, use placeholder values until we can properly parse eth_log_data.raw_log
-            let raw_event = crate::eth::eth_processor::RawEvent {
-                address: "0x".to_string(), // TODO: Extract from raw_log JSON
-                data: "0x".to_string(),    // TODO: Extract from raw_log JSON
-                topics: vec![],            // TODO: Extract from raw_log JSON
-            };
-            
-            // Create context with event logger
-            let context = crate::eth::context::EthContext::new();
-            
-            // Call the event handler
-            (event_handler.handler)(raw_event, context).await;
+            let (processor, event_handler) = self.find_handler(&data.chain_id, handler_id)?;
+
+            debug!(
+                "Calling ETH log handler for processor: {}",
+                processor.name()
+            );
+
+            // Check if we have a parsed log to work with
+            if let Some(ref log) = parsed_data.log {
+                let event = RawEvent {
+                    log: log.clone(),
+                    decoded_log: None,
+                };
+
+                // TODO: Implement log decoding if needed
+                if event_handler.need_decode_log() {
+                    // todo decode log
+                }
+
+                // Create context with event logger
+                let mut context = crate::eth::context::EthContext::new();
+                let metadata = MetaData::default();
+                let runtime_ctx = RUNTIME_CONTEXT.get();
+                RUNTIME_CONTEXT
+                    .scope(
+                        runtime_ctx.with_metadata(metadata),
+                            (event_handler.handler)(event, &context)
+                    )
+                    .await;
+                let partial_result =context.stop_and_get_result();
+                result = result.merge(partial_result)
+            } else {
+                debug!("No log found for processor: {}", processor.name());
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+impl crate::ProcessResult {
+    fn merge(mut self, other: crate::ProcessResult) -> Self {
+        // Extend vectors with other's values
+        self.gauges.extend(other.gauges);
+        self.counters.extend(other.counters);
+        #[allow(deprecated)]
+        self.logs.extend(other.logs);
+        self.events.extend(other.events);
+        self.exports.extend(other.exports);
+        self.timeseries_result.extend(other.timeseries_result);
+        
+        // Merge states - combine config_updated flags and errors
+        match (self.states.as_mut(), other.states) {
+            (Some(self_state), Some(other_state)) => {
+                // If either has config_updated = true, result should be true
+                self_state.config_updated = self_state.config_updated || other_state.config_updated;
+                
+                // Combine errors - if both have errors, concatenate them
+                match (&self_state.error, other_state.error) {
+                    (Some(self_error), Some(other_error)) => {
+                        self_state.error = Some(format!("{}; {}", self_error, other_error));
+                    }
+                    (None, Some(other_error)) => {
+                        self_state.error = Some(other_error);
+                    }
+                    // If self has error and other doesn't, keep self's error
+                    // If neither has error, keep None
+                    _ => {}
+                }
+            }
+            (None, Some(other_state)) => {
+                // If self has no state but other does, use other's state
+                self.states = Some(other_state);
+            }
+            // If other has no state, keep self's state (or None)
+            _ => {}
         }
         
-        Ok(crate::ProcessResult::default())
+        self
     }
 }
 
 #[tonic::async_trait]
 impl AsyncPluginProcessor for EthPlugin {
-    async fn process_binding(&self, data: &crate::DataBinding) -> anyhow::Result<crate::ProcessResult> {
-        debug!("EthPlugin processing binding for chain_id: {}, handler_ids: {:?}", data.chain_id, data.handler_ids);
-        
+    async fn process_binding(
+        &self,
+        data: &crate::DataBinding,
+    ) -> anyhow::Result<crate::ProcessResult> {
+        debug!(
+            "EthPlugin processing binding for chain_id: {}, handler_ids: {:?}",
+            data.chain_id, data.handler_ids
+        );
+
         // Dispatch by handler type
         let handler_type = crate::processor::HandlerType::try_from(data.handler_type)?;
-        
+
         match handler_type {
             HandlerType::EthLog => self.process_eth_log(data).await,
             HandlerType::EthBlock => {
                 debug!("ETH block processing not implemented yet");
                 Ok(crate::ProcessResult::default())
-            },
+            }
             HandlerType::EthTrace => {
                 debug!("ETH trace processing not implemented yet");
                 Ok(crate::ProcessResult::default())
-            },
+            }
             HandlerType::EthTransaction => {
                 debug!("ETH transaction processing not implemented yet");
                 Ok(crate::ProcessResult::default())
-            },
-            _ => Err(anyhow::anyhow!("Unsupported handler type: {:?}", handler_type))
+            }
+            _ => Err(anyhow::anyhow!(
+                "Unsupported handler type: {:?}",
+                handler_type
+            )),
         }
     }
-
 }
 
 // Implement the combined FullPlugin trait
@@ -274,11 +389,15 @@ mod tests {
 
         let mut processor = EthProcessor::new();
         processor.options = options;
-        
-        let processor = processor.on_event(|_event, _ctx| async {
-            // Test event handler
-        }, vec![], None);
-        
+
+        let processor = processor.on_event(
+            |_event, _ctx| async {
+                // Test event handler
+            },
+            vec![],
+            None,
+        );
+
         // Register the processor
         plugin.register_processor(processor);
 

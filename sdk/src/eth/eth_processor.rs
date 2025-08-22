@@ -187,32 +187,6 @@ where
     }
 }
 
-// Wrapper to convert a processor into an event handler
-pub struct ProcessorEventHandlerWrapper<T: EventMarker> {
-    processor: Arc<dyn EthProcessor>,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: EventMarker> TypeErasedEventHandler for ProcessorEventHandlerWrapper<T> {
-    fn handle_event(
-        &self,
-        event: EthEvent,
-        ctx: crate::eth::context::EthContext,
-    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        // This is where we need to cast the processor to the event handler type
-        // We'll handle this through dynamic dispatch
-
-        Box::pin(async move {
-            // For now, this is a placeholder - we need a different approach
-            // The actual implementation would need to use downcasting
-            panic!("ProcessorEventHandlerWrapper needs proper implementation");
-        })
-    }
-
-    fn get_filters(&self) -> Vec<EventFilter> {
-        T::filter()
-    }
-}
 
 type AsyncEventHandler = Arc<dyn TypeErasedEventHandler>;
 
@@ -261,27 +235,9 @@ impl EthProcessorImpl {
         }
     }
 
-    /// Get the number of registered event handlers
-    pub fn handler_count(&self) -> usize {
-        self.event_handlers.len()
-    }
-
-    /// Get a reference to the bind options
-    pub fn options(&self) -> &EthBindOptions {
-        &self.options
-    }
-
-    /// Get the contract address this processor is bound to
-    pub fn address(&self) -> &str {
-        &self.options.address
-    }
-
-    /// Check if this processor has any event handlers
-    pub fn has_handlers(&self) -> bool {
-        !self.event_handlers.is_empty()
-    }
 
     /// Add an event handler for a specific event type
+    #[cfg(test)]
     pub fn add_event_handler<T: EventMarker>(
         &mut self,
         handler: impl EthEventHandler<T>,
@@ -302,31 +258,6 @@ impl EthProcessorImpl {
         self.event_handlers.push(event_handler);
     }
 
-    /// Add an event handler from a processor that implements EthEventHandler<T>
-    pub fn add_event_handler_from_processor<T: EventMarker>(
-        &mut self,
-        processor: Arc<dyn EthProcessor>,
-        options: Option<OnEventOption>,
-    ) {
-        let filters = T::filter();
-
-        // Create a wrapper that implements TypeErasedEventHandler
-        let wrapper = ProcessorEventHandlerWrapper::<T> {
-            processor,
-            _phantom: std::marker::PhantomData,
-        };
-
-        let type_erased: Arc<dyn TypeErasedEventHandler> = Arc::new(wrapper);
-
-        let event_handler = EventHandler {
-            handler: type_erased,
-            filters: filters.clone(),
-            options,
-            name: None,
-        };
-
-        self.event_handlers.push(event_handler);
-    }
 }
 
 impl BaseProcessor for EthProcessorImpl {

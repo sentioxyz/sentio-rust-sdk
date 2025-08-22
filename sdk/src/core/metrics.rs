@@ -75,6 +75,7 @@ pub struct MetricOptions {
 #[derive(Debug, Clone)]
 pub struct Counter {
     name: String,
+    #[allow(dead_code)]
     options: MetricOptions,
 }
 
@@ -197,6 +198,7 @@ impl Counter {
 #[derive(Debug, Clone)]
 pub struct Gauge {
     name: String,
+    #[allow(dead_code)]
     options: MetricOptions,
 }
 

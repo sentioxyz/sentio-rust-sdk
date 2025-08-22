@@ -65,20 +65,29 @@ pub trait Context: Send + Sync {
     }
 
     fn set_config_updated(&mut self, updated: bool) {
-        self.base_context().config_updated = updated
+        self.base_context().config_updated = updated;
+        
+        // Also collect the state change if collector is available
+        if let Some(collector) = self.state_collector() {
+            collector.set_config_updated(updated);
+        }
     }
+    
+    /// Report error with state collection
+    fn report_error(&self, error: String) {
+        if let Some(collector) = self.state_collector() {
+            collector.report_error(error);
+        }
+    }
+    
+     fn state_collector(&self) -> Option<&StateCollector>;
 
-    fn stop_and_get_result(&mut self) -> crate::processor::ProcessResult {
-        self.base_context().stop_and_get_result()
-    }
 }
 
 #[derive(Clone)]
 pub struct BaseContext {
     config_updated: bool,
 }
-
-
 
 impl BaseContext {
     /// Create a new BaseContext
@@ -115,17 +124,6 @@ impl BaseContext {
     pub fn gauge_with_options(&self, name: &str, options: MetricOptions) -> Gauge {
         Gauge::with_options(name, options)
     }
-
-    pub(crate) fn stop_and_get_result(&self) -> crate::processor::ProcessResult {
-        let mut result = crate::processor::ProcessResult::default();
-        if self.config_updated {
-            result.states = Some(crate::processor::StateResult {
-                config_updated: true,
-                error: None,
-            })
-        }
-        result
-    }
 }
 
 impl Default for BaseContext {
@@ -143,7 +141,6 @@ pub struct RuntimeContext {
     pub process_id: i32,
     /// Metadata for this runtime context (Arc for lightweight cloning)
     pub metadata: std::sync::Arc<MetaData>,
-
  }
 
 
@@ -242,4 +239,86 @@ impl RuntimeContext {
 
 tokio::task_local! {
     pub static RUNTIME_CONTEXT: RuntimeContext;
+}
+
+/// Types of state updates that can occur in handlers
+#[derive(Debug, Clone)]
+pub enum StateUpdate {
+    ConfigUpdated(bool),
+    Error(String),
+}
+
+/// Collects state modifications from user handlers using a channel
+#[derive(Debug, Clone)]
+pub struct StateCollector {
+    sender: tokio::sync::mpsc::UnboundedSender<StateUpdate>,
+}
+
+impl StateCollector {
+    /// Create a new StateCollector with its corresponding receiver
+    pub fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<StateUpdate>) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        (Self { sender }, receiver)
+    }
+    
+    /// Record a config update state change
+    pub fn set_config_updated(&self, updated: bool) {
+        // Ignore send errors - if receiver is dropped, we just lose the update
+        let _ = self.sender.send(StateUpdate::ConfigUpdated(updated));
+    }
+    
+    /// Record an error state change  
+    pub fn report_error(&self, error: String) {
+        let _ = self.sender.send(StateUpdate::Error(error));
+    }
+    
+    /// Check if the collector is still active (sender not dropped)
+    pub fn is_active(&self) -> bool {
+        !self.sender.is_closed()
+    }
+}
+
+/// Helper to collect all state updates into a ProcessResult
+pub struct StateUpdateCollector {
+    receiver: tokio::sync::mpsc::UnboundedReceiver<StateUpdate>,
+}
+
+impl StateUpdateCollector {
+    /// Create a new collector with the given receiver
+    pub fn new(receiver: tokio::sync::mpsc::UnboundedReceiver<StateUpdate>) -> Self {
+        Self { receiver }
+    }
+    
+    /// Collect all pending state updates into a ProcessResult (non-blocking)
+    pub fn collect_updates(&mut self) -> crate::processor::ProcessResult {
+        let mut result = crate::processor::ProcessResult::default();
+        let mut config_updated = false;
+        let mut errors = Vec::new();
+        
+        // Drain all available updates without blocking
+        while let Ok(update) = self.receiver.try_recv() {
+            match update {
+                StateUpdate::ConfigUpdated(updated) => {
+                    config_updated = config_updated || updated;
+                }
+                StateUpdate::Error(error) => {
+                    errors.push(error);
+                }
+            }
+        }
+        
+        // Only create StateResult if we have updates
+        if config_updated || !errors.is_empty() {
+            result.states = Some(crate::processor::StateResult {
+                config_updated,
+                error: if errors.is_empty() { 
+                    None 
+                } else { 
+                    Some(errors.join("; "))
+                },
+            });
+        }
+        
+        result
+    }
 }

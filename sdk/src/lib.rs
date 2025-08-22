@@ -22,4 +22,7 @@ pub use core::{BaseProcessor, Plugin};
 pub use eth::EthPlugin;
 pub use processor::HandlerType;
 
+// Re-export async_trait macro for convenience
+pub use async_trait::async_trait;
+
  

@@ -1,17 +1,47 @@
+use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::eth::eth_processor::*;
-use sentio_sdk::Server;
+use sentio_sdk::eth::EthEventHandler;
+use sentio_sdk::core::Context;
+use sentio_sdk::{async_trait, Server};
+
+
+struct MyEthEventHandler {}
+
+#[async_trait]
+impl EthEventHandler for MyEthEventHandler {
+    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
+        println!(
+            "Processing event from contract: {:?} on chain: {}",
+            event.log.address,
+            ctx.chain_id()
+        );
+        
+        println!(
+            "Event details - Block: {}, Transaction: {:?}, Log Index: {}",
+            event.log.block_number.unwrap_or_default(),
+            event.log.transaction_hash,
+            event.log.log_index.unwrap_or_default()
+        );
+        
+        // Can access and modify context
+        ctx.set_config_updated(true);
+        
+        println!("Event processing completed!");
+    }
+}
+
+
+
 
 fn main() {
     let server = Server::new();
 
-    // Create a processor with event handlers and bind it to the server
+    // Create a processor with trait-based event handler and bind it to the server
     EthProcessor::new()
         .on_event(
-            |_event, _ctx| async {
-                println!("Processing event!");
-            },
-            Vec::new(),
-            None,
+            MyEthEventHandler {},
+            Vec::new(), // No specific filters - process all events
+            None,       // No special options
         )
         .bind(
             &server,
@@ -20,5 +50,6 @@ fn main() {
                 .with_network("1"),
         );
 
+    println!("Starting Ethereum processor with trait-based handler...");
     server.start();
 }

@@ -2,6 +2,8 @@ use ethers::prelude::{Block, Log, Transaction, TransactionReceipt, H256};
 use crate::data::EthLog;
 use tracing::debug;
 use serde_json;
+use crate::eth::context::EthContext;
+use crate::eth::eth_processor::EthEvent;
 
 /// Container for parsed Ethereum data structures
 #[derive(Debug)]
@@ -67,4 +69,8 @@ impl From<&EthLog> for ParsedEthData {
     }
 }
 
- 
+
+#[crate::async_trait]
+pub trait EthEventHandler: Send + Sync + 'static   {
+    async fn on_event(&self, event: EthEvent, ctx: EthContext);
+}

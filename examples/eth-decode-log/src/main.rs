@@ -1,9 +1,12 @@
-use sentio_sdk::eth::eth_processor::*;
-use sentio_sdk::Server;
-use std::env;
 use anyhow::{anyhow, Result};
-use serde::Serialize;
 use ethers::abi::{Event, ParamType, RawLog, Token};
+use sentio_sdk::eth::eth_processor::*;
+use sentio_sdk::eth::EthEventHandler;
+use sentio_sdk::eth::context::EthContext;
+use sentio_sdk::core::Context;
+use sentio_sdk::{async_trait, Server};
+use serde::Serialize;
+use std::env;
 use tracing::{debug, info, warn};
 
 mod abi_client;
@@ -43,17 +46,107 @@ struct ErrorLogData {
     error: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+struct LogDecoderHandler;
+
+#[async_trait]
+impl EthEventHandler for LogDecoderHandler {
+    async fn on_event(&self, event: EthEvent, ctx: EthContext) {
+        // Can use context directly in async closure now!
+        let ctx_chain_id = ctx.chain_id();
+        let ctx_transaction_hash = ctx.transaction_hash();
+        
+        debug!("processing {}, {}", ctx_chain_id, ctx_transaction_hash);
+        
+        // Create a basic log identifier from the event itself
+        let log_id = format!(
+            "{}_{}", 
+            format!("{:?}", event.log.address),
+            event
+                .log
+                .topics
+                .get(0)
+                .map(|t| format!("{:?}", t))
+                .unwrap_or_else(|| "unknown".to_string())
+        );
+
+        // Initialize ABI client with environment variables
+        let sentio_host = env::var("SENTIO_HOST")
+            .unwrap_or_else(|_| "https://app.sentio.xyz".to_string());
+        let chain_id = env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string());
+        let abi_client = AbiClient::new(sentio_host, chain_id.clone());
+
+        match decode_log(&event, &abi_client).await {
+            Ok(Some(decoded)) => {
+                let decoded_log = DecodedLogData {
+                    id: log_id.clone(),
+                    chain_id: chain_id.clone(),
+                    transaction_hash: "".to_string(), // Context doesn't provide this yet
+                    transaction_index: 0,
+                    timestamp: 0,
+                    block_number: 0,
+                    block_hash: "".to_string(),
+                    log_index: 0,
+                    log_address: format!("{:?}", event.log.address),
+                    data: format!("{:?}", event.log.data),
+                    topics: event
+                        .log
+                        .topics
+                        .iter()
+                        .map(|t| format!("{:?}", t))
+                        .collect(),
+                    args: decoded.args,
+                    arg_key_mappings: decoded.arg_key_mappings,
+                    signature: decoded.signature,
+                    event_name: decoded.event_name,
+                    arg_types: decoded.arg_types,
+                };
+
+                info!(
+                    "Successfully decoded log: {} - {}",
+                    decoded_log.event_name, log_id
+                );
+                debug!("Decoded log data: {:?}", decoded_log);
+            }
+            Ok(None) => {
+                debug!("No ABI found for log: {}", log_id);
+            }
+            Err(e) => {
+                let error_log = ErrorLogData {
+                    distinct_id: log_id,
+                    transaction_hash: "".to_string(),
+                    transaction_index: 0,
+                    block_number: 0,
+                    block_hash: "".to_string(),
+                    log_address: format!("{:?}", event.log.address),
+                    data: format!("{:?}", event.log.data),
+                    topics: serde_json::to_string(
+                        &event
+                            .log
+                            .topics
+                            .iter()
+                            .map(|t| format!("{:?}", t))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap_or_else(|_| "[]".to_string()),
+                    error: e.to_string(),
+                };
+
+                warn!("Failed to decode log: {:?}", error_log);
+            }
+        }
+    }
+}
+
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    
+
     let server = Server::new();
 
     // Create a processor that listens to all events (no filters)
     EthProcessor::new()
         .on_event(
-process_log,
-            Vec::new(), // Empty filters means listen to all events
+            LogDecoderHandler,
+            Vec::new(),
             None,
         )
         .bind(
@@ -65,70 +158,8 @@ process_log,
 
     info!("Starting Ethereum log decoder processor...");
     server.start();
-    
-    Ok(())
-}
 
-fn process_log(
-    event: RawEvent, 
-    _ctx: &sentio_sdk::eth::context::EthContext,
-) -> impl std::future::Future<Output = ()> + Send + 'static {
-    async move {
-    // Create a basic log identifier from the event itself
-    let log_id = format!("{}_{}", 
-        format!("{:?}", event.log.address),
-        event.log.topics.get(0).map(|t| format!("{:?}", t)).unwrap_or_else(|| "unknown".to_string())
-    );
-    
-    // Initialize ABI client with environment variables
-    let sentio_host = env::var("SENTIO_HOST").unwrap_or_else(|_| "https://app.sentio.xyz".to_string());
-    let chain_id = env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string());
-    let abi_client = AbiClient::new(sentio_host, chain_id.clone());
-    
-    match decode_log(&event, &abi_client).await {
-        Ok(Some(decoded)) => {
-            let decoded_log = DecodedLogData {
-                id: log_id.clone(),
-                chain_id: chain_id.clone(),
-                transaction_hash: "".to_string(), // Context doesn't provide this yet
-                transaction_index: 0,
-                timestamp: 0,
-                block_number: 0,
-                block_hash: "".to_string(),
-                log_index: 0,
-                log_address: format!("{:?}", event.log.address),
-                data: format!("{:?}", event.log.data),
-                topics: event.log.topics.iter().map(|t| format!("{:?}", t)).collect(),
-                args: decoded.args,
-                arg_key_mappings: decoded.arg_key_mappings,
-                signature: decoded.signature,
-                event_name: decoded.event_name,
-                arg_types: decoded.arg_types,
-            };
-            
-            info!("Successfully decoded log: {} - {}", decoded_log.event_name, log_id);
-            debug!("Decoded log data: {:?}", decoded_log);
-        }
-        Ok(None) => {
-            debug!("No ABI found for log: {}", log_id);
-        }
-        Err(e) => {
-            let error_log = ErrorLogData {
-                distinct_id: log_id,
-                transaction_hash: "".to_string(),
-                transaction_index: 0,
-                block_number: 0,
-                block_hash: "".to_string(),
-                log_address: format!("{:?}", event.log.address),
-                data: format!("{:?}", event.log.data),
-                topics: serde_json::to_string(&event.log.topics.iter().map(|t| format!("{:?}", t)).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".to_string()),
-                error: e.to_string(),
-            };
-            
-            warn!("Failed to decode log: {:?}", error_log);
-        }
-    }
-    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -140,34 +171,50 @@ struct DecodedLog {
     arg_types: Vec<String>,
 }
 
-async fn decode_log(event: &RawEvent, abi_client: &AbiClient) -> Result<Option<DecodedLog>> {
+async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> Result<Option<DecodedLog>> {
     if event.log.topics.is_empty() {
         return Err(anyhow!("Log does not contain a valid signature topic"));
     }
-    
+
     let signature = &format!("{:?}", event.log.topics[0]);
-    
+
     // Try to get ABI from signature
-    match abi_client.get_abi_from_signature(signature, &format!("{:?}", event.log.address), None, None).await? {
+    match abi_client
+        .get_abi_from_signature(signature, &format!("{:?}", event.log.address), None, None)
+        .await?
+    {
         Some(abi_item) => {
             match parse_log_with_ethers(&abi_item, event) {
                 Ok(decoded) => Ok(Some(decoded)),
                 Err(e) => {
-                    if e.to_string().contains("data out-of-bounds") || e.to_string().contains("insufficient") {
+                    if e.to_string().contains("data out-of-bounds")
+                        || e.to_string().contains("insufficient")
+                    {
                         // Try again with topics and data
-                        let topics: Vec<String> = event.log.topics.iter().map(|t| format!("{:?}", t)).collect();
+                        let topics: Vec<String> = event
+                            .log
+                            .topics
+                            .iter()
+                            .map(|t| format!("{:?}", t))
+                            .collect();
                         let data = format!("{:?}", event.log.data);
-                        match abi_client.get_abi_from_signature(
-                            signature, 
-                            &format!("{:?}", event.log.address), 
-                            Some(&topics), 
-                            Some(&data)
-                        ).await? {
+                        match abi_client
+                            .get_abi_from_signature(
+                                signature,
+                                &format!("{:?}", event.log.address),
+                                Some(&topics),
+                                Some(&data),
+                            )
+                            .await?
+                        {
                             Some(abi_item) => {
                                 let decoded = parse_log_with_ethers(&abi_item, event)?;
                                 Ok(Some(decoded))
                             }
-                            None => Err(anyhow!("No ABI found for signature {} after retry", signature))
+                            None => Err(anyhow!(
+                                "No ABI found for signature {} after retry",
+                                signature
+                            )),
                         }
                     } else {
                         Err(e)
@@ -175,48 +222,45 @@ async fn decode_log(event: &RawEvent, abi_client: &AbiClient) -> Result<Option<D
                 }
             }
         }
-        None => Err(anyhow!("No ABI found for signature {}", signature))
+        None => Err(anyhow!("No ABI found for signature {}", signature)),
     }
 }
 
-fn parse_log_with_ethers(abi_item: &str, event: &RawEvent) -> Result<DecodedLog> {
+fn parse_log_with_ethers(abi_item: &str, event: &EthEvent) -> Result<DecodedLog> {
     // Parse the ABI item as an Event
     let event_abi: Event = serde_json::from_str(abi_item)?;
-    
+
     // Use topics directly from the ethers Log structure
     let topics = event.log.topics.clone();
-    
+
     // Use data directly from the ethers Log structure
     let data = event.log.data.to_vec();
-    
+
     // Create RawLog for ethers
-    let raw_log = RawLog {
-        topics,
-        data,
-    };
-    
+    let raw_log = RawLog { topics, data };
+
     // Decode the log using ethers
     let decoded = event_abi.parse_log(raw_log)?;
-    
+
     // Extract information
     let event_name = event_abi.name.clone();
     let signature = format!("{:?}", event.log.topics[0]); // Use the original signature from topics
-    
+
     let mut arg_key_mappings = Vec::new();
     let mut arg_types = Vec::new();
     let mut args_map = std::collections::HashMap::new();
-    
+
     for (i, param) in event_abi.inputs.iter().enumerate() {
         arg_key_mappings.push(param.name.clone());
         arg_types.push(format_param_type(&param.kind));
-        
+
         if let Some(value) = decoded.params.get(i) {
             args_map.insert(param.name.clone(), format_token(&value.value));
         }
     }
-    
+
     let args = serde_json::to_string(&args_map)?;
-    
+
     Ok(DecodedLog {
         args,
         arg_key_mappings,

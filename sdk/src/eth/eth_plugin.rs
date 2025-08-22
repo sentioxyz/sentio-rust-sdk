@@ -1,6 +1,9 @@
 use crate::core::plugin::FullPlugin;
-use crate::core::{AsyncPluginProcessor, BaseProcessor, Context, HandlerRegister, MetaData, Plugin, PluginRegister, RUNTIME_CONTEXT};
-use crate::eth::eth_processor::{EthProcessor, RawEvent, TimeOrBlock};
+use crate::core::{
+    AsyncPluginProcessor, BaseProcessor, HandlerRegister, MetaData, Plugin, PluginRegister,
+    StateCollector, StateUpdateCollector, RUNTIME_CONTEXT,
+};
+use crate::eth::eth_processor::{EthProcessor, EthEvent, TimeOrBlock};
 use crate::eth::ParsedEthData;
 use crate::log_filter::AddressOrType;
 use crate::processor::HandlerType;
@@ -238,7 +241,7 @@ impl EthPlugin {
 
             // Check if we have a parsed log to work with
             if let Some(ref log) = parsed_data.log {
-                let event = RawEvent {
+                let event = EthEvent {
                     log: log.clone(),
                     decoded_log: None,
                 };
@@ -248,18 +251,27 @@ impl EthPlugin {
                     // todo decode log
                 }
 
-                // Create context with event logger
-                let mut context = crate::eth::context::EthContext::new();
+                // Create state collector for this handler execution
+                let (state_collector, state_receiver) = StateCollector::new();
+                let mut update_collector = StateUpdateCollector::new(state_receiver);
+
+                // Create context with state collector
+                let context =
+                    crate::eth::context::EthContext::with_state_collector(state_collector);
                 let metadata = MetaData::default();
                 let runtime_ctx = RUNTIME_CONTEXT.get();
+
+                // Execute the user handler with owned context using trait method
                 RUNTIME_CONTEXT
                     .scope(
                         runtime_ctx.with_metadata(metadata),
-                            (event_handler.handler)(event, &context)
+                        event_handler.handler.on_event(event, context),
                     )
                     .await;
-                let partial_result =context.stop_and_get_result();
-                result = result.merge(partial_result)
+
+                // Collect state updates that occurred during handler execution
+                let state_result = update_collector.collect_updates();
+                result = result.merge(state_result)
             } else {
                 debug!("No log found for processor: {}", processor.name());
             }
@@ -279,13 +291,13 @@ impl crate::ProcessResult {
         self.events.extend(other.events);
         self.exports.extend(other.exports);
         self.timeseries_result.extend(other.timeseries_result);
-        
+
         // Merge states - combine config_updated flags and errors
         match (self.states.as_mut(), other.states) {
             (Some(self_state), Some(other_state)) => {
                 // If either has config_updated = true, result should be true
                 self_state.config_updated = self_state.config_updated || other_state.config_updated;
-                
+
                 // Combine errors - if both have errors, concatenate them
                 match (&self_state.error, other_state.error) {
                     (Some(self_error), Some(other_error)) => {
@@ -306,7 +318,7 @@ impl crate::ProcessResult {
             // If other has no state, keep self's state (or None)
             _ => {}
         }
-        
+
         self
     }
 }
@@ -376,6 +388,16 @@ mod tests {
     use super::*;
     use crate::eth::eth_processor::{EthBindOptions, EthOnEvent};
     use crate::{ConfigureHandlersRequest, ConfigureHandlersResponse};
+    use crate::eth::EthEventHandler;
+
+    struct TestHandler;
+
+    #[crate::async_trait]
+    impl EthEventHandler for TestHandler {
+        async fn on_event(&self, _event: EthEvent, _ctx: crate::eth::context::EthContext) {
+            // Test event handler
+        }
+    }
 
     #[test]
     fn test_configure_method() {
@@ -391,9 +413,7 @@ mod tests {
         processor.options = options;
 
         let processor = processor.on_event(
-            |_event, _ctx| async {
-                // Test event handler
-            },
+            TestHandler,
             vec![],
             None,
         );

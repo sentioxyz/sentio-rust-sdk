@@ -1,12 +1,10 @@
-use crate::eth::context::EthContext;
 use crate::core::BaseProcessor;
 use chrono::prelude::*;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use ethers::types::Log;
 use ethers::abi::Log as DecodedLog;
 use crate::{AddressType, EthFetchConfig, EthPlugin, Server};
+use crate::eth::EthEventHandler;
 
 #[derive(Clone)]
 pub struct EthBindOptions {
@@ -68,7 +66,7 @@ pub enum TimeOrBlock {
 }
 
 #[derive(Clone)]
-pub struct RawEvent {
+pub struct EthEvent {
     pub log: Log,
     pub decoded_log: Option<DecodedLog>
 }
@@ -86,18 +84,19 @@ pub struct OnEventOption {
     decode_log: bool,
 }
 
+
+
 pub trait EthOnEvent {
-    fn on_event<F>(
+    /// Register an event handler using a trait implementation (new simplified API)
+    fn on_event(
         self,
-        handler: fn(RawEvent, &EthContext) -> F,
+        handler: impl EthEventHandler,
         filter: Vec<EventFilter>,
         options: Option<OnEventOption>,
-    ) -> Self
-    where
-        F: Future<Output = ()> + Send + 'static;
+    ) -> Self;
 }
 
-type AsyncEventHandler = Arc<dyn Fn(RawEvent, &EthContext) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type AsyncEventHandler = Arc<dyn EthEventHandler>;
 
 #[derive(Clone)]
 pub(crate) struct EventHandler {
@@ -193,23 +192,19 @@ impl BaseProcessor for EthProcessor {
 
 
 impl EthOnEvent for EthProcessor {
-    fn on_event<F>(
+    
+    fn on_event(
         mut self,
-        handler: fn(RawEvent, &EthContext) -> F,
+        handler: impl EthEventHandler,
         filters: Vec<EventFilter>,
         options: Option<OnEventOption>,
     ) -> Self
-    where
-        F: Future<Output = ()> + Send + 'static,
     {
-        // Wrap the handler function to match our type signature
-        let async_handler: AsyncEventHandler = Arc::new(move |event, context| {
-            let future = handler(event, context);
-            Box::pin(future)
-        });
+        // Convert the trait implementation to our internal handler type
+        let handler = Arc::new(handler);
 
         let event_handler = EventHandler {
-            handler: async_handler,
+            handler,
             filters,
             options,
             name: None,

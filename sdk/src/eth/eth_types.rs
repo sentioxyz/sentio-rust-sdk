@@ -3,7 +3,7 @@ use crate::data::EthLog;
 use tracing::debug;
 use serde_json;
 use crate::eth::context::EthContext;
-use crate::eth::eth_processor::EthEvent;
+use crate::eth::eth_processor::{EthEvent, EventFilter};
 
 /// Container for parsed Ethereum data structures
 #[derive(Debug)]
@@ -69,8 +69,14 @@ impl From<&EthLog> for ParsedEthData {
     }
 }
 
+/// Marker trait that defines filtering criteria for specific event types
+/// This allows for type-safe event handling where each handler struct can define its own filter
+pub trait EventMarker: Send + Sync + 'static {
+    /// Returns the event filter criteria for this event type
+    fn filter() -> Vec<EventFilter>;
+}
 
 #[crate::async_trait]
-pub trait EthEventHandler: Send + Sync + 'static   {
+pub trait EthEventHandler<T: EventMarker>: Send + Sync + 'static {
     async fn on_event(&self, event: EthEvent, ctx: EthContext);
 }

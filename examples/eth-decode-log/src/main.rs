@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use ethers::abi::{Event, ParamType, RawLog, Token};
 use sentio_sdk::eth::eth_processor::*;
-use sentio_sdk::eth::EthEventHandler;
+use sentio_sdk::eth::{EthEventHandler, EventMarker};
 use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::core::Context;
 use sentio_sdk::{async_trait, Server};
@@ -46,10 +46,58 @@ struct ErrorLogData {
     error: String,
 }
 
-struct LogDecoderHandler;
+struct LogDecoderHandler {
+    address: String,
+    chain_id: String,
+    name: String,
+}
+
+impl LogDecoderHandler {
+    pub fn new() -> Self {
+        Self {
+            address: "".to_string(), // Empty means all contracts
+            chain_id: std::env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string()),
+            name: "Ethereum Log Decoder".to_string(),
+        }
+    }
+}
+
+impl EthProcessor for LogDecoderHandler {
+    fn address(&self) -> &str {
+        &self.address
+    }
+    
+    fn chain_id(&self) -> &str {
+        &self.chain_id
+    }
+    
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+// Implement Clone so we can use it in configure_event
+impl Clone for LogDecoderHandler {
+    fn clone(&self) -> Self {
+        Self {
+            address: self.address.clone(),
+            chain_id: self.chain_id.clone(),
+            name: self.name.clone(),
+        }
+    }
+}
+
+struct AllEventsMarker;
+
+impl EventMarker for AllEventsMarker {
+    fn filter() -> Vec<EventFilter> {
+        // Return empty filters to capture all events
+        vec![]
+    }
+}
 
 #[async_trait]
-impl EthEventHandler for LogDecoderHandler {
+impl EthEventHandler<AllEventsMarker> for LogDecoderHandler {
     async fn on_event(&self, event: EthEvent, ctx: EthContext) {
         // Can use context directly in async closure now!
         let ctx_chain_id = ctx.chain_id();
@@ -143,18 +191,9 @@ fn main() -> Result<()> {
     let server = Server::new();
 
     // Create a processor that listens to all events (no filters)
-    EthProcessor::new()
-        .on_event(
-            LogDecoderHandler,
-            Vec::new(),
-            None,
-        )
-        .bind(
-            &server,
-            EthBindOptions::new("") // Empty address means process logs from all contracts
-                .with_name("Ethereum Log Decoder")
-                .with_network(&env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string())),
-        );
+    LogDecoderHandler::new()
+        .configure_event::<AllEventsMarker>(None)
+        .bind(&server);
 
     info!("Starting Ethereum log decoder processor...");
     server.start();

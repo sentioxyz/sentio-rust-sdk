@@ -247,6 +247,16 @@ impl Default for Server {
     }
 }
 
+impl crate::BindableServer for Server {
+    fn register_processor<T, P>(&self, processor: T)
+    where
+        T: crate::core::BaseProcessor + 'static,
+        P: crate::core::plugin::PluginRegister<T> + crate::core::plugin::FullPlugin + Default + 'static,
+    {
+        self.register_processor::<T, P>(processor);
+    }
+}
+
 #[tonic::async_trait]
 impl ProcessorV3 for Server {
     type ProcessBindingsStreamStream = std::pin::Pin<

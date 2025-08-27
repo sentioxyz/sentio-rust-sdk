@@ -1,6 +1,7 @@
 pub mod server;
 pub mod eth;
 pub mod core;
+pub mod testing;
 
 #[cfg(test)]
 mod server_test;
@@ -24,5 +25,18 @@ pub use processor::HandlerType;
 
 // Re-export async_trait macro for convenience
 pub use async_trait::async_trait;
+
+// Re-export testing framework components
+pub use testing::{TestProcessorServer, TestEnvironment};
+
+/// Trait that defines the ability to bind processors to a server instance
+/// This allows both production Server and TestProcessorServer to work with the same API
+pub trait BindableServer {
+    /// Register a processor with the appropriate plugin
+    fn register_processor<T, P>(&self, processor: T)
+    where
+        T: crate::core::BaseProcessor + 'static,
+        P: crate::core::plugin::PluginRegister<T> + crate::core::plugin::FullPlugin + Default + 'static;
+}
 
  

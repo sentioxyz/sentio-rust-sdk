@@ -1,6 +1,6 @@
 use crate::core::BaseProcessor;
 use crate::eth::{EthEventHandler, EventMarker};
-use crate::{AddressType, EthFetchConfig, EthPlugin, Server};
+use crate::{AddressType, EthFetchConfig, EthPlugin};
 use chrono::prelude::*;
 use ethers::abi::Log as DecodedLog;
 use ethers::types::Log;
@@ -125,7 +125,7 @@ impl<P: EthProcessor> ConfigurableEthProcessor<P> {
     }
 
     /// Bind this configured processor to a server
-    pub fn bind(self, server: &Server) {
+    pub fn bind<S: crate::BindableServer>(self, server: &S) {
         let processor_arc = Arc::new(self.processor);
         let mut processor_impl = EthProcessorImpl::new(processor_arc);
         processor_impl.event_handlers = self.event_handlers;

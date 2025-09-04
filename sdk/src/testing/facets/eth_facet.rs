@@ -5,8 +5,9 @@ use crate::{Data, data};
 use ethers::types::{Log, Block, Transaction, Address, H256};
 use std::collections::HashMap;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use prost_types;
+use crate::entity::store::backend::RemoteBackend;
 use crate::timeseries_result::TimeseriesType;
 
 /// Ethereum testing facet for simulating blockchain data
@@ -57,9 +58,9 @@ impl EthTestFacet {
             
             // 2. Create a channel for collecting metrics and events
             let (tx, mut rx) = mpsc::channel(1024);
-            
+            let remote_backend = std::sync::Arc::new(RwLock::new(RemoteBackend::new()));
             // 3. Create RuntimeContext
-            let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1);
+            let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend);
             
             // 4. Process the binding using PluginManager from server
             let pm = self.server.plugin_manager.read().await;

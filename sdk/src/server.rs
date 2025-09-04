@@ -1,11 +1,13 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
-
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use crate::core::plugin_manager::PluginManager;
 use anyhow::Result;
 use clap::Parser;
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
 use tracing::{debug, error, info};
-
+use crate::entity::store::backend::RemoteBackend;
 use crate::processor::{
     processor_v3_server::{ProcessorV3, ProcessorV3Server as TonicProcessorV3Server},
     ConfigureHandlersRequest, ConfigureHandlersResponse, ExecutionConfig, InitResponse,
@@ -38,7 +40,7 @@ pub struct ServerArgs {
 /// Sentio Processor gRPC Server
 pub struct Server {
     args: Option<ServerArgs>,
-    pub plugin_manager: std::sync::Arc<tokio::sync::RwLock<PluginManager>>,
+    pub plugin_manager: Arc<tokio::sync::RwLock<PluginManager>>,
 }
 
 impl Server {
@@ -46,7 +48,7 @@ impl Server {
     pub fn new() -> Self {
         Self {
             args: None,
-            plugin_manager: std::sync::Arc::new(tokio::sync::RwLock::new(Default::default())),
+            plugin_manager: Arc::new(tokio::sync::RwLock::new(Default::default())),
         }
     }
 
@@ -380,6 +382,7 @@ impl ProcessorV3 for Server {
         let plugin_manager = self.plugin_manager.clone();
 
         tokio::spawn(async move {
+            let mut db_backends = HashMap::new();
             while let Some(stream_request) = inbound_stream.next().await {
                 match stream_request {
                     Ok(req) => {
@@ -389,7 +392,9 @@ impl ProcessorV3 for Server {
                         );
                         let process_id = req.process_id;
                         let tx_clone = tx.clone();
-
+                        let db_backend = db_backends.entry(req.process_id).or_insert_with(|| {
+                            Arc::new(RwLock::new(RemoteBackend::new()))
+                        });
                         // Process the request and send responses
                         if let Some(value) = req.value {
                             match value {
@@ -397,7 +402,7 @@ impl ProcessorV3 for Server {
                                     debug!("Processing binding for chain_id: {}", binding.chain_id);
 
                                     // Create RuntimeContext with the tx clone for event logging and empty metadata
-                                    let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_clone.clone(), process_id);
+                                    let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_clone.clone(), process_id, db_backend.clone());
 
                                     // Use PluginManager's process method with the binding and context
                                     let pm = plugin_manager.read().await;
@@ -423,9 +428,9 @@ impl ProcessorV3 for Server {
                                         }
                                     }
                                 }
-                                process_stream_request::Value::DbResult(_db_result) => {
-                                    debug!("Received DB result, ignoring for now");
-                                    // TODO: Handle DB results if needed
+                                process_stream_request::Value::DbResult(db_result) => {
+                                    let mut backend = db_backend.write().await;
+                                    backend.receive_db_result(db_result)
                                 }
                                 process_stream_request::Value::Start(start) => {
                                     debug!("Received start signal: {}", start);

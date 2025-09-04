@@ -21,9 +21,24 @@ futures = "0.3"
 clap = { version = "4.5", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 tonic-prost = "0.14.1"
 ethers = { version = "2.0", features = ["abigen", "rustls"] }
 
+# Entity framework dependencies
+graphql-parser = "0.4"
+bigdecimal = { version = "0.4", features = ["serde"] }
+derive_builder = "0.20"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+bytes = "1.8"
+codegen = "0.2"
+async-promise = "0.1.0"
+num-bigint = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+
 [build-dependencies]
 tonic-prost-build = "0.14.1"
+
+[dev-dependencies]
+tempfile = "3.12"
+

@@ -1,0 +1,63 @@
+
+
+# Core token transfer entity for tracking ERC-20 transfers
+type Transfer @entity {
+    id: ID!
+    transactionHash: String!
+    blockNumber: BigInt!
+    timestamp: Timestamp!
+    from: String!
+    to: String!
+    value: BigDecimal!
+    contract: String!
+    logIndex: Int!
+}
+
+# Approval events for ERC-20 tokens
+type Approval @entity {
+    id: ID!
+    transactionHash: String!
+    blockNumber: BigInt!
+    timestamp: Timestamp!
+    owner: String!
+    spender: String!
+    value: BigDecimal!
+    contract: String!
+    logIndex: Int!
+}
+
+# Account entity to track wallet interactions
+type Account @entity {
+    id: ID!
+    address: String! @unique
+    firstSeen: Timestamp!
+    lastActive: Timestamp!
+    transferCount: BigInt!
+    totalTransferred: BigDecimal!
+    transfers: [Transfer!]! @derivedFrom(field: "from")
+    received: [Transfer!]! @derivedFrom(field: "to")
+    approvals: [Approval!]! @derivedFrom(field: "owner")
+}
+
+# Contract entity to track token contract metadata
+type TokenContract @entity {
+    id: ID!
+    address: String! @unique
+    name: String
+    symbol: String
+    decimals: Int
+    totalSupply: BigDecimal
+    transferCount: BigInt!
+    holderCount: BigInt!
+    createdAt: Timestamp!
+}
+
+# Daily statistics for analytics (timeseries entity)
+type DailyStats @entity(timeseries: true) {
+    id: Int8!
+    timestamp: Timestamp!
+    transferCount: BigInt!
+    uniqueUsers: BigInt!
+    totalVolume: BigDecimal!
+    contractsActive: BigInt!
+}

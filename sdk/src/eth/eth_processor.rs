@@ -2,12 +2,13 @@ use crate::core::BaseProcessor;
 use crate::eth::{EthEventHandler, EventMarker};
 use crate::{AddressType, EthFetchConfig, EthPlugin};
 use chrono::prelude::*;
+use derive_builder::Builder;
 use ethers::abi::Log as DecodedLog;
 use ethers::types::Log;
 use std::future::Future;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Builder)]
 pub struct EthBindOptions {
     pub address: String,
     /// Optional, if not set, then use eth mainnet

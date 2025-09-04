@@ -3,6 +3,7 @@ use anyhow::Result;
 
 mod commands;
 mod utils;
+mod codegen;
 
 use commands::*;
 

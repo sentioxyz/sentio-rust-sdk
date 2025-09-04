@@ -161,7 +161,7 @@ pre-build = [
             // Debian/Ubuntu-based containers (glibc) - download binary directly
             vec![
                 "apt-get update".to_string(),
-                "apt-get install -y curl unzip".to_string(),
+                "apt-get install -y curl unzip libssl-dev".to_string(),
                 "mkdir -p /usr/local".to_string(),
                 "curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v31.1/protoc-31.1-linux-x86_64.zip".to_string(),
                 "unzip protoc-31.1-linux-x86_64.zip -d /usr/local".to_string(),

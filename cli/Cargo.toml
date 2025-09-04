@@ -7,10 +7,6 @@ license.workspace = true
 description = "CLI tool for compiling Sentio processors in Rust"
 
 [[bin]]
-name = "sentio"
-path = "src/main.rs"
-
-[[bin]]
 name = "cargo-sentio"
 path = "src/main.rs"
 

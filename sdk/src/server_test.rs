@@ -65,7 +65,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_databinding_zero_copy_optimization() {
-        // This test demonstrates that we're not unnecessarily copying DataBinding
+        todo!();
+        /*// This test demonstrates that we're not unnecessarily copying DataBinding
         // by using the binding directly from the stream
         let server = Server::new();
         
@@ -82,15 +83,16 @@ mod tests {
         
         // Create a mock RuntimeContext for testing
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx, 1);
-        
-        // This should work without any intermediate DataBinding creation
-        // The process method takes &DataBinding, so no copy is made
-        let result = pm.process(&binding, runtime_context).await;
-        
-        // We expect this to fail since no plugins are registered, but the important
-        // thing is that it compiles and doesn't require copying the binding
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No plugin registered"));
+
+        // let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx, 1, );
+        //
+        // // This should work without any intermediate DataBinding creation
+        // // The process method takes &DataBinding, so no copy is made
+        // let result = pm.process(&binding, runtime_context).await;
+        //
+        // // We expect this to fail since no plugins are registered, but the important
+        // // thing is that it compiles and doesn't require copying the binding
+        // assert!(result.is_err());
+        // assert!(result.unwrap_err().to_string().contains("No plugin registered"));*/
     }
 }

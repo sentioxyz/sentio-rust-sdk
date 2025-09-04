@@ -1,12 +1,16 @@
-use crate::{processor::TimeseriesResult, ProcessStreamResponseV2};
+use crate::{db_response, processor::TimeseriesResult, DbRequest, ProcessStreamResponseV2, Store};
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use tokio::sync::RwLock;
 use tonic::Status;
 use tracing::debug;
 // Re-export EventLogger trait from event_logger module
 pub use crate::core::event_logger::EventLogger;
 // Re-export metrics types
 pub use crate::core::metrics::{Counter, Gauge, Meter, MetricOptions, NumberValue};
+use crate::entity::store::backend::RemoteBackend;
 
 /// Labels type for metadata - equivalent to TypeScript Labels
 pub type Labels = HashMap<String, String>;
@@ -35,6 +39,13 @@ pub trait Context: Send + Sync {
         RUNTIME_CONTEXT.with(|ctx| (*ctx.metadata).clone())
     }
 
+    fn store(&self) -> Store {
+        RUNTIME_CONTEXT.with(|ctx|{
+            let backend = ctx.remote_backend.clone();
+            Store::from_arc(backend)
+        })
+    }
+    
     /// Get metadata for a given name and labels
     fn address(&self) -> String {
         self.metadata().address.clone()
@@ -140,9 +151,10 @@ pub struct RuntimeContext {
     /// Process ID for this runtime context
     pub process_id: i32,
     /// Metadata for this runtime context (Arc for lightweight cloning)
-    pub metadata: std::sync::Arc<MetaData>,
- }
+    pub metadata: Arc<MetaData>,
 
+    pub remote_backend: Arc<RwLock<RemoteBackend>>
+ }
 
 impl RuntimeContext {
     /// Create a new RuntimeContext with the given event logger sender, process ID, and metadata
@@ -154,7 +166,8 @@ impl RuntimeContext {
         Self {
             tx,
             process_id,
-            metadata: std::sync::Arc::new(metadata),
+            metadata: Arc::new(metadata),
+            remote_backend: Arc::new(RwLock::new(RemoteBackend::new()))
         }
     }
 
@@ -162,6 +175,7 @@ impl RuntimeContext {
     pub fn new_with_empty_metadata(
         tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV2, Status>>,
         process_id: i32,
+        remote_backend: Arc::<RwLock<RemoteBackend>>
     ) -> Self {
         let metadata = MetaData {
             address: String::new(),
@@ -176,13 +190,14 @@ impl RuntimeContext {
         Self {
             tx,
             process_id,
-            metadata: std::sync::Arc::new(metadata),
+            metadata: Arc::new(metadata),
+            remote_backend
         }
     }
 
     /// Update the metadata in this runtime context
     pub fn with_metadata(mut self, metadata: MetaData) -> Self {
-        self.metadata = std::sync::Arc::new(metadata);
+        self.metadata = Arc::new(metadata);
         self
     }
 
@@ -233,6 +248,20 @@ impl RuntimeContext {
             .map_err(|e| anyhow::anyhow!("Failed to send timeseries result: {}", e))?;
 
         debug!("Emitted TimeseriesResult");
+        Ok(())
+    }
+
+    pub async fn send_db_request(&self,db_request: crate::processor::DbRequest) -> Result<()> {
+        let response = ProcessStreamResponseV2 {
+            process_id: self.process_id,
+            value: Some(crate::processor::process_stream_response_v2::Value::DbRequest(db_request)),
+        };
+
+        self.tx
+            .send(Ok(response))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send entity result: {}", e))?;
+        debug!("Emitted DbRequest");
         Ok(())
     }
 }

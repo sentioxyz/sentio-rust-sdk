@@ -12,3 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 sentio-sdk = { path = "../../sdk" }
+rust_decimal = "1.36"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+derive_builder = "0.20"
+
+[build-dependencies]
+sentio-cli = { path = "../../cli" }

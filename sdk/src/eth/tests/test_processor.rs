@@ -156,34 +156,6 @@ impl EthEventHandler<ApprovalEvent> for TestErc20Processor {
     }
 }
 
-/// Initialize test processors for testing
-/// 
-/// This function demonstrates how to properly register a processor
-/// with both Transfer and Approval event handlers.
-pub fn init_test_processors(server: &Server) {
-    // Create and bind a test ERC20 processor with both event handlers
-    TestErc20Processor::new(
-        "0x1E4EDE388cbc9F4b5c79681B7f94d36a11ABEBC9", // Test contract address
-        "TestToken"
-    )
-    .configure_event::<TransferEvent>(None)
-    .configure_event::<ApprovalEvent>(None)
-    .bind(server);
-    
-    println!("Test ERC20 processor initialized with Transfer and Approval handlers");
-}
-
-/// Initialize a test processor for a specific contract address
-pub fn init_contract_processor(server: &Server, contract_address: &str, name: &str, chain_id: &str) {
-    TestErc20Processor::new(contract_address, name)
-        .with_chain_id(chain_id)
-        .configure_event::<TransferEvent>(None)
-        .configure_event::<ApprovalEvent>(None)
-        .bind(server);
-        
-    println!("Test processor initialized for contract: {} on chain: {}", contract_address, chain_id);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

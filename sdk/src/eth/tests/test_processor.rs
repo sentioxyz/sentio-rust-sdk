@@ -7,7 +7,7 @@ use crate::eth::eth_processor::*;
 use crate::eth::{EthEventHandler, EventMarker};
 use crate::eth::context::EthContext;
 use crate::core::Context;
-use crate::{async_trait, Server};
+use crate::async_trait;
 
 /// Sample ERC20 processor for testing event handlers
 #[derive(Clone)]
@@ -160,8 +160,8 @@ impl EthEventHandler<ApprovalEvent> for TestErc20Processor {
 mod tests {
     use super::*;
     use crate::testing::addresses;
-    use ethers::types::Address;
-    use crate::HandlerType;
+    
+    
 
     #[tokio::test]
     async fn test_processor_creation() {

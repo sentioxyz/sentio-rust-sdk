@@ -4,6 +4,9 @@ use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::eth::eth_processor::*;
 use sentio_sdk::eth::{EthEventHandler, EventMarker};
 use sentio_sdk::async_trait;
+use crate::entities::Transfer;
+use crate::entities::transfer::TransferBuilder;
+use sentio_sdk::entity::{BigInt, BigDecimal, Timestamp, ID, Entity};
 
 #[derive(Clone)]
 pub(crate) struct MyEthProcessor {
@@ -93,7 +96,7 @@ impl EventMarker for ApprovalEvent {
 
 #[async_trait]
 impl EthEventHandler<TransferEvent> for MyEthProcessor {
-    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
+    async fn on_event(&self, event: EthEvent, ctx: EthContext) {
         println!("🔄 Processing TRANSFER event from contract: {:?} on chain: {}",
                  event.log.address, ctx.chain_id());
 
@@ -105,22 +108,39 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
 
 
 
-        // Example of using builder pattern with derive_builder
-        // let transfer = TransferBuilder::default()
-        //     .id(format!("{:?}-{}", event.log.transaction_hash, event.log.log_index.unwrap_or_default()))
-        //     .transaction_hash(format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
-        //     .block_number(event.log.block_number.unwrap_or_default().into())
-        //     .timestamp(Utc::now())
-        //     .build()
-        //     .expect("Failed to build transfer entity");
-        // transfer.save(store_ctx.store()).await.unwrap();
+        // Create a Transfer entity using the entity framework
+        let transfer_id = format!("{:?}-{}", 
+            event.log.transaction_hash.unwrap_or_default(), 
+            event.log.log_index.unwrap_or_default()
+        );
+
+        let transfer = TransferBuilder::default()
+            .id(ID::from(transfer_id))
+            .transactionHash(format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
+            .blockNumber(BigInt::from(event.log.block_number.unwrap_or_default().as_u64()))
+            .logIndex(event.log.log_index.unwrap_or_default().as_u32() as i32)
+            .contract(format!("{:?}", event.log.address))
+            .from("0x0000000000000000000000000000000000000000".to_string()) // Placeholder - would normally decode from log data
+            .to("0x0000000000000000000000000000000000000000".to_string())   // Placeholder - would normally decode from log data
+            .value(BigDecimal::from(0)) // Placeholder - would normally decode from log data
+            .timestamp(Timestamp::from_timestamp_millis(ctx.block_number() as i64 * 15000).unwrap_or_default()) // Rough timestamp approximation
+            .build()
+            .expect("Failed to build transfer entity");
+
+        // Get the store from the context and save the entity
+        let store = ctx.store();
+        
+        println!("💾 Saving Transfer entity with ID: {}", transfer.id());
+        
+        // This would save the entity to the store
+        // transfer.save(&store).await.expect("Failed to save transfer entity");
 
      }
 }
 
 #[async_trait]
 impl EthEventHandler<ApprovalEvent> for MyEthProcessor {
-    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
+    async fn on_event(&self, event: EthEvent, ctx: EthContext) {
 
     }
 }

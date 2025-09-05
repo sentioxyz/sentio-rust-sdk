@@ -147,7 +147,7 @@ pub trait EthProcessor: Send + Sync + 'static {
     fn name(&self) -> &str;
 
     fn configure_event<T: EventMarker>(
-        mut self,
+        self,
         options: Option<OnEventOption>,
     ) -> ConfigurableEthProcessor<Self>
     where

@@ -1,8 +1,8 @@
 //! Schema validation for entity definitions
 
 use super::types::{EntitySchema, EntityType, FieldDefinition, FieldType};
-use anyhow::{anyhow, Result};
-use std::collections::{HashMap, HashSet};
+use anyhow::Result;
+use std::collections::HashSet;
 
 /// Validator for entity schemas
 pub struct SchemaValidator {

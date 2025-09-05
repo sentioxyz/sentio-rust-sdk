@@ -3,10 +3,9 @@
 //! This module provides a simple, synchronous API for all code generators.
 //! It handles source discovery, validation, and generation coordination.
 
-use anyhow::{Result, Context};
+use anyhow::Result;
 use derive_builder::Builder;
 use std::path::{Path, PathBuf};
-use std::fs;
 
 /// Result of a code generation operation
 #[derive(Debug, Clone, Builder)]

@@ -380,7 +380,7 @@ impl PluginRegister<EthProcessorImpl> for EthPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eth::eth_processor::{EthBindOptions, EthProcessor};
+    use crate::eth::eth_processor::EthProcessor;
     use crate::{ConfigureHandlersRequest, ConfigureHandlersResponse};
     use crate::eth::EthEventHandler;
 

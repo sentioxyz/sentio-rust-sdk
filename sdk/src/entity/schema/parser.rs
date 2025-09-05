@@ -4,8 +4,7 @@ use super::types::{EntitySchema, EntityType, FieldDefinition, FieldType, Directi
 use crate::entity::types::ScalarType;
 use anyhow::{anyhow, Context, Result};
 use graphql_parser::schema::{
-    Document, Definition, TypeDefinition, ObjectType, Field, Type, Value, 
-    DirectiveDefinition, DirectiveLocation
+    Document, Definition, TypeDefinition, ObjectType, Field, Type, Value
 };
 use std::collections::HashMap;
 use std::fs;

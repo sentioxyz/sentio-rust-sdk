@@ -1,9 +1,10 @@
 use crate::eth::EthHandlerType;
-use crate::core::RuntimeContext;
-use crate::{DataBinding, HandlerType};
+use crate::core::{AttributeValue, RuntimeContext};
+use crate::{DataBinding, HandlerType, LogLevel};
 use crate::{Data, data};
 use ethers::types::{Log, Block, Transaction, Address, H256};
 use std::collections::HashMap;
+use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::{RwLock, mpsc};
 use prost_types;
@@ -53,31 +54,8 @@ impl EthTestFacet {
         let mut test_result = TestResult::new();
         
         for log in logs {
-            // 1. Convert log to DataBinding format
             let data_binding = self.create_log_data_binding(&log, &chain_id_str).await;
-            
-            // 2. Create a channel for collecting metrics and events
-            let (tx, mut rx) = mpsc::channel(1024);
-            let remote_backend = std::sync::Arc::new(RwLock::new(RemoteBackend::new()));
-            // 3. Create RuntimeContext
-            let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend);
-            
-            // 4. Process the binding using PluginManager from server
-            let pm = self.server.plugin_manager.read().await;
-            match pm.process(&data_binding, runtime_context).await {
-                Ok(_process_result) => {
-                    // Processing succeeded, collect any messages from the channel
-                    while let Ok(msg) = rx.try_recv() {
-                        if let Ok(response) = msg {
-                            self.collect_results_from_channel_response(response, chain_id, &mut test_result);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error processing log: {}", e);
-                    // Continue with other logs even if one fails
-                }
-            }
+            self.server.process_databinding(&data_binding, &mut test_result).await;
         }
         
         test_result
@@ -182,177 +160,6 @@ impl EthTestFacet {
         
         handler_ids
     }
-    
-    /// Collect results from a single channel response
-    fn collect_results_from_channel_response(
-        &self, 
-        response: crate::ProcessStreamResponseV2, 
-        chain_id: u64, 
-        test_result: &mut TestResult
-    ) {
-        if let Some(value) = response.value {
-            match value {
-                crate::processor::process_stream_response_v2::Value::TsRequest(ts_request) => {
-                    // Process timeseries data (counters and gauges)
-                    for ts_data in ts_request.data {
-                        self.process_timeseries_result(ts_data, chain_id, test_result);
-                    }
-                }
-                // TODO: Handle event logs and other request types when the correct protobuf types are identified
-                _ => {
-                    // Handle other request types if needed
-                }
-            }
-        }
-    }
-    
-    /// Process a single timeseries result (counter or gauge)
-    fn process_timeseries_result(
-        &self,
-        ts_result: crate::TimeseriesResult,
-        chain_id: u64,
-        test_result: &mut TestResult
-    ) {
-        let metadata = TestMetadata {
-            contract_name: ts_result.metadata.as_ref().map(|m| m.contract_name.clone()),
-            block_number: ts_result.metadata.as_ref().map(|m| m.block_number as u64),
-            handler_type: EthHandlerType::Event,
-            chain_id,
-        };
-        
-        let name = ts_result.metadata.as_ref()
-            .map(|m| m.name.clone())
-            .unwrap_or_default();
-            
-        let labels = ts_result.metadata.as_ref()
-            .map(|m| m.labels.clone())
-            .unwrap_or_default();
-        
-        // Get the metric type from the `type` field
-        let metric_type = ts_result.r#type();
-        
-        // Extract value from data field (which is a RichStruct)
-        let value = if let Some(ref data) = ts_result.data {
-            // Try to extract a numeric value from the RichStruct fields
-            data.fields.get("value")
-                .and_then(|v| match &v.value {
-                    Some(value_type) => match value_type {
-                        crate::common::rich_value::Value::FloatValue(f) => Some(*f),
-                        crate::common::rich_value::Value::IntValue(i) => Some(*i as f64),
-                        _ => None,
-                    },
-                    None => None,
-                })
-                .unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        
-        match metric_type {
-            TimeseriesType::Counter => {
-                test_result.counters.push(CounterResult {
-                    name,
-                    value,
-                    labels,
-                    metadata,
-                });
-            }
-            TimeseriesType::Gauge => {
-                test_result.gauges.push(GaugeResult {
-                    name,
-                    value,
-                    labels,
-                    metadata,
-                });
-            }
-            TimeseriesType::Event => {
-                // Process event logs
-                self.process_event_log(ts_result, chain_id, test_result);
-            }
-            _ => {
-                // Handle other metric types if needed
-            }
-        }
-    }
-    
-    /// Process an event log from TimeseriesResult
-    fn process_event_log(
-        &self,
-        ts_result: crate::TimeseriesResult,
-        chain_id: u64,
-        test_result: &mut TestResult
-    ) {
-        let metadata = TestMetadata {
-            contract_name: ts_result.metadata.as_ref().map(|m| m.contract_name.clone()),
-            block_number: ts_result.metadata.as_ref().map(|m| m.block_number as u64),
-            handler_type: EthHandlerType::Event,
-            chain_id,
-        };
-        
-        // Extract event name and attributes from the RichStruct data
-        let (event_name, attributes) = if let Some(data) = &ts_result.data {
-            let mut event_name = String::new();
-            let mut attributes = HashMap::new();
-            
-            // Extract event name
-            if let Some(name_value) = data.fields.get("event_name") {
-                if let Some(value) = &name_value.value {
-                    if let crate::common::rich_value::Value::StringValue(name) = value {
-                        event_name = name.clone();
-                    }
-                }
-            }
-            
-            // Convert all other fields to JSON values for attributes
-            for (key, rich_value) in &data.fields {
-                if key != "event_name" {  // Skip the event name field
-                    let json_value = self.rich_value_to_json_value(rich_value);
-                    attributes.insert(key.clone(), json_value);
-                }
-            }
-            
-            (event_name, attributes)
-        } else {
-            ("unknown_event".to_string(), HashMap::new())
-        };
-        
-        test_result.events.push(EventResult {
-            name: event_name,
-            attributes,
-            metadata,
-        });
-    }
-    
-    /// Convert RichValue to serde_json::Value for event attributes
-    fn rich_value_to_json_value(&self, rich_value: &crate::common::RichValue) -> serde_json::Value {
-        if let Some(value) = &rich_value.value {
-            match value {
-                crate::common::rich_value::Value::StringValue(s) => serde_json::Value::String(s.clone()),
-                crate::common::rich_value::Value::FloatValue(f) => serde_json::Value::Number(
-                    serde_json::Number::from_f64(*f).unwrap_or(serde_json::Number::from(0))
-                ),
-                crate::common::rich_value::Value::IntValue(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
-                crate::common::rich_value::Value::Int64Value(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
-                crate::common::rich_value::Value::BoolValue(b) => serde_json::Value::Bool(*b),
-                crate::common::rich_value::Value::ListValue(list) => {
-                    let array: Vec<serde_json::Value> = list.values.iter()
-                        .map(|v| self.rich_value_to_json_value(v))
-                        .collect();
-                    serde_json::Value::Array(array)
-                },
-                crate::common::rich_value::Value::StructValue(struct_val) => {
-                    let mut map = serde_json::Map::new();
-                    for (key, nested_value) in &struct_val.fields {
-                        map.insert(key.clone(), self.rich_value_to_json_value(nested_value));
-                    }
-                    serde_json::Value::Object(map)
-                },
-                _ => serde_json::Value::Null,
-            }
-        } else {
-            serde_json::Value::Null
-        }
-    }
 
     /// Test a single block
     pub async fn test_block(&self, block: Block<H256>, chain_id: Option<u64>) -> TestResult {
@@ -360,8 +167,8 @@ impl EthTestFacet {
     }
 
     /// Test multiple blocks
-    pub async fn test_blocks(&self, blocks: Vec<Block<H256>>, chain_id: Option<u64>) -> TestResult {
-        let chain_id = chain_id.unwrap_or(1);
+    pub async fn test_blocks(&self, _blocks: Vec<Block<H256>>, chain_id: Option<u64>) -> TestResult {
+        let _chain_id = chain_id.unwrap_or(1);
         
         // TODO: Similar to test_logs but for block events
         
@@ -374,8 +181,8 @@ impl EthTestFacet {
     }
 
     /// Test multiple transactions
-    pub async fn test_transactions(&self, transactions: Vec<Transaction>, chain_id: Option<u64>) -> TestResult {
-        let chain_id = chain_id.unwrap_or(1);
+    pub async fn test_transactions(&self, _transactions: Vec<Transaction>, chain_id: Option<u64>) -> TestResult {
+        let _chain_id = chain_id.unwrap_or(1);
         
         // TODO: Process transaction events
         
@@ -388,8 +195,8 @@ impl EthTestFacet {
     }
 
     /// Test multiple account-specific logs
-    pub async fn test_account_logs(&self, address: Address, logs: Vec<Log>, chain_id: Option<u64>) -> TestResult {
-        let chain_id = chain_id.unwrap_or(1);
+    pub async fn test_account_logs(&self, _address: Address, _logs: Vec<Log>, chain_id: Option<u64>) -> TestResult {
+        let _chain_id = chain_id.unwrap_or(1);
         
         // TODO: Process account-specific log events
         
@@ -457,7 +264,7 @@ pub struct GaugeResult {
 #[derive(Debug, Clone)]
 pub struct EventResult {
     pub name: String,
-    pub attributes: HashMap<String, Value>,
+    pub attributes: HashMap<String, AttributeValue>,
     pub metadata: TestMetadata,
 }
 
@@ -466,7 +273,6 @@ pub struct TestMetadata {
     pub contract_name: Option<String>,
     pub block_number: Option<u64>,
     pub handler_type: EthHandlerType,
-    pub chain_id: u64,
 }
 
 impl Default for EthTestFacet {

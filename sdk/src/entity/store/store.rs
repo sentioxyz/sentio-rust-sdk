@@ -9,7 +9,6 @@ use crate::entity::ToRichValue;
 use crate::{db_response, RichValueList};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use serde_json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

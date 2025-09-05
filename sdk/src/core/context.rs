@@ -1,8 +1,7 @@
-use crate::{db_response, processor::TimeseriesResult, DbRequest, ProcessStreamResponseV2, Store};
+use crate::{processor::TimeseriesResult, ProcessStreamResponseV2, Store};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use tokio::sync::RwLock;
 use tonic::Status;
 use tracing::debug;
@@ -175,7 +174,7 @@ impl RuntimeContext {
     pub fn new_with_empty_metadata(
         tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV2, Status>>,
         process_id: i32,
-        remote_backend: Arc::<RwLock<RemoteBackend>>
+        remote_backend: Arc<RwLock<RemoteBackend>>
     ) -> Self {
         let metadata = MetaData {
             address: String::new(),

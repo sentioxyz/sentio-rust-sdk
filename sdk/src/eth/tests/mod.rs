@@ -5,13 +5,12 @@
 
 pub mod test_processor;
 
-use crate::testing::TestProcessorServer;
 
 #[cfg(test)]
 mod tests {
     use crate::eth::eth_processor::EthProcessor;
     use crate::eth::EventMarker;
-    use crate::testing::{addresses, chain_ids, mock_transfer_log};
+    use crate::testing::{addresses, chain_ids, mock_transfer_log, TestProcessorServer};
     use super::*;
 
     /// Example test showing how to test an ERC20 transfer handler

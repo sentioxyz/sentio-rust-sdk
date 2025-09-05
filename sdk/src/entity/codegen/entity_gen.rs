@@ -2,11 +2,10 @@
 
 use crate::entity::schema::{EntitySchema, EntityType, FieldDefinition, FieldType};
 use crate::entity::schema::parser::SchemaParser;
-use crate::entity::types::ScalarType;
 use crate::codegen::{CodeGenerator, CodegenResult};
 use anyhow::{Result, Context};
 use codegen::{Scope, Function, Impl, Struct};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs;
 
 /// Generator for entity struct code using the codegen crate

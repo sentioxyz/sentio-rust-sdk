@@ -1,8 +1,12 @@
-use crate::testing::{TestEnvironment, EthTestFacet, MemoryDatabase};
-use crate::core::PluginManager;
+use std::collections::HashMap;
+use crate::testing::{TestEnvironment, EthTestFacet, MemoryDatabase, TestResult, TestMetadata, CounterResult, GaugeResult, EventResult};
+use crate::core::{AttributeValue, PluginManager, RuntimeContext};
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use crate::ConfigureHandlersResponse;
+use tokio::sync::{mpsc, RwLock};
+use crate::{ConfigureHandlersResponse, DataBinding};
+use crate::entity::store::backend::RemoteBackend;
+use crate::eth::EthHandlerType;
+use crate::timeseries_result::TimeseriesType;
 
 /// Main test processor server that orchestrates processor testing
 ///
@@ -33,6 +37,173 @@ pub struct TestProcessorServer {
     /// Plugin manager for coordinating processors (public for facet access)
     pub(crate) plugin_manager: Arc<RwLock<PluginManager>>,
     config: Option<ConfigureHandlersResponse>
+}
+
+impl TestProcessorServer {
+    pub(crate) async fn process_databinding(&self, data_binding: &DataBinding, test_result: &mut TestResult) {
+        // 2. Create a channel for collecting metrics and events
+        let (tx, mut rx) = mpsc::channel(1024);
+        // 3. Create RuntimeContext using the test server's MemoryDatabase
+        // We need to create a TestBackend that wraps the MemoryDatabase
+        let memory_db = Arc::new(RwLock::new(self.db.clone()));
+        let test_backend = Arc::new(RwLock::new(crate::testing::TestBackend::from_arc(memory_db)));
+
+        // For now, we'll use RemoteBackend but this is a placeholder for the test backend
+        let remote_backend = std::sync::Arc::new(RwLock::new(RemoteBackend::new()));
+        let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend);
+
+        // 4. Process the binding using PluginManager from server
+        let pm = self.plugin_manager.read().await;
+        match pm.process(&data_binding, runtime_context).await {
+            Ok(_process_result) => {
+                // Processing succeeded, collect any messages from the channel
+                while let Ok(msg) = rx.try_recv() {
+                    if let Ok(response) = msg {
+                        self.collect_results_from_channel_response(response, test_result);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error processing log: {}", e);
+                // Continue with other logs even if one fails
+            }
+        }
+    }
+
+    /// Collect results from a single channel response
+    fn collect_results_from_channel_response(
+        &self,
+        response: crate::ProcessStreamResponseV2,
+        test_result: &mut TestResult
+    ) {
+        if let Some(value) = response.value {
+            match value {
+                crate::processor::process_stream_response_v2::Value::TsRequest(ts_request) => {
+                    // Process timeseries data (counters and gauges)
+                    for ts_data in ts_request.data {
+                        self.process_timeseries_result(ts_data,  test_result);
+                    }
+                }
+                // TODO: Handle event logs and other request types when the correct protobuf types are identified
+                _ => {
+                    // Handle other request types if needed
+                }
+            }
+        }
+    }
+
+    /// Process a single timeseries result (counter or gauge)
+    fn process_timeseries_result(
+        &self,
+        ts_result: crate::TimeseriesResult,
+        test_result: &mut TestResult
+    ) {
+        let metadata = TestMetadata {
+            contract_name: ts_result.metadata.as_ref().map(|m| m.contract_name.clone()),
+            block_number: ts_result.metadata.as_ref().map(|m| m.block_number as u64),
+            handler_type: EthHandlerType::Event,
+        };
+
+        let name = ts_result.metadata.as_ref()
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
+
+        let labels = ts_result.metadata.as_ref()
+            .map(|m| m.labels.clone())
+            .unwrap_or_default();
+
+        // Get the metric type from the `type` field
+        let metric_type = crate::timeseries_result::TimeseriesType::from_i32(ts_result.r#type)
+            .unwrap_or(TimeseriesType::Counter);
+
+        // Extract value from data field (which is a RichStruct)
+        let value = if let Some(ref data) = ts_result.data {
+            // Try to extract a numeric value from the RichStruct fields
+            data.fields.get("value")
+                .and_then(|v| match &v.value {
+                    Some(value_type) => match value_type {
+                        crate::common::rich_value::Value::FloatValue(f) => Some(*f),
+                        crate::common::rich_value::Value::IntValue(i) => Some(*i as f64),
+                        _ => None,
+                    },
+                    None => None,
+                })
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        match metric_type {
+            TimeseriesType::Counter => {
+                test_result.counters.push(CounterResult {
+                    name,
+                    value,
+                    labels,
+                    metadata,
+                });
+            }
+            TimeseriesType::Gauge => {
+                test_result.gauges.push(GaugeResult {
+                    name,
+                    value,
+                    labels,
+                    metadata,
+                });
+            }
+            TimeseriesType::Event => {
+                // Process event logs
+                self.process_event_log(ts_result, test_result);
+            }
+        }
+    }
+
+    /// Process an event log from TimeseriesResult
+    fn process_event_log(
+        &self,
+        ts_result: crate::TimeseriesResult,
+        test_result: &mut TestResult
+    ) {
+        let metadata = TestMetadata {
+            contract_name: ts_result.metadata.as_ref().map(|m| m.contract_name.clone()),
+            block_number: ts_result.metadata.as_ref().map(|m| m.block_number as u64),
+            handler_type: EthHandlerType::Event,
+        };
+
+        // Extract event name and attributes from the RichStruct data
+        let (event_name, attributes) = if let Some(data) = &ts_result.data {
+            let mut event_name = String::new();
+            let mut attributes = HashMap::new();
+
+            // Extract event name
+            if let Some(name_value) = data.fields.get("event_name") {
+                if let Some(value) = &name_value.value {
+                    if let crate::common::rich_value::Value::StringValue(name) = value {
+                        event_name = name.clone();
+                    }
+                }
+            }
+
+            // Convert all other fields to JSON values for attributes
+            for (key, rich_value) in &data.fields {
+                if key != "event_name" {  // Skip the event name field
+                    if let Ok(attribute_value) = AttributeValue::try_from(rich_value) {
+                        attributes.insert(key.clone(), attribute_value);
+                    }
+                }
+            }
+
+            (event_name, attributes)
+        } else {
+            ("unknown_event".to_string(), HashMap::new())
+        };
+
+        test_result.events.push(EventResult {
+            name: event_name,
+            attributes,
+            metadata,
+        });
+    }
+
 }
 
 impl TestProcessorServer {

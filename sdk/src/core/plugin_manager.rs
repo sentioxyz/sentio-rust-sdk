@@ -2,7 +2,6 @@ use crate::core::plugin::FullPlugin;
 use crate::core::{RuntimeContext, RUNTIME_CONTEXT};
 use crate::{ConfigureHandlersRequest, DataBinding, ProcessResult};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Default)]
 pub struct PluginManager {

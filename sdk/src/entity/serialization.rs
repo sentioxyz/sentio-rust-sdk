@@ -123,7 +123,7 @@ fn proto_biginteger_to_bigint(proto: &ProtoBigInteger) -> Result<BigInt> {
 
 /// Convert BigDecimal (bigdecimal::BigDecimal) to protobuf BigDecimal
 fn decimal_to_proto_bigdecimal(value: &BigDecimal) -> Result<ProtoBigDecimal> {
-    use std::str::FromStr;
+    
     
     // Convert BigDecimal to (mantissa, scale) representation
     let (mantissa_bigint, scale) = value.as_bigint_and_exponent();

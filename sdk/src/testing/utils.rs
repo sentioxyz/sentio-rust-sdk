@@ -175,7 +175,8 @@ pub mod addresses {
     
     /// Common test addresses
     pub const TEST_ADDRESS_1: &str = "0x1111111111111111111111111111111111111111";
-    pub const TEST_ADDRESS_2: &str = "0x2222222222222222222222222222222222222222"; 
+    pub const TEST_ADDRESS_2: &str = "0x2222222222222222222222222222222222222222";
+    pub const TEST_ADDRESS_3: &str = "0x3333333333333333333333333333333333333333"; 
     pub const TEST_CONTRACT: &str = "0x1E4EDE388cbc9F4b5c79681B7f94d36a11ABEBC9";
     
     /// Popular token addresses for testing

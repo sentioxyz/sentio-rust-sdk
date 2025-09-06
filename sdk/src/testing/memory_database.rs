@@ -6,34 +6,70 @@ use crate::common::RichStruct;
 use crate::{db_response, processor::Entity};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use dashmap::DashMap;
 
 #[derive(Debug, Clone)]
 pub struct MemoryDatabase {
     // table_name -> entity_id -> entity
-    data: Arc<RwLock<HashMap<String, HashMap<String, Entity>>>>,
+    data: DashMap<String, DashMap<String, Entity>>,
 }
 
 impl MemoryDatabase {
     pub fn new() -> Self {
         Self {
-            data: Arc::new(RwLock::new(HashMap::new())),
+            data: DashMap::new(),
         }
     }
     
     pub async fn clear(&mut self) {
-        self.data.write().await.clear();
+        self.data.clear();
     }
     
     pub async fn get_table_count(&self, table: &str) -> usize {
         self.data
-            .read()
-            .await
             .get(table)
-            .map(|t| t.len())
+            .map(|table_data| table_data.len())
             .unwrap_or(0)
+    }
+    
+    /// Get all entities in a table (for testing purposes)
+    pub async fn list_table_entities(&self, table: &str) -> Vec<Entity> {
+        self.data
+            .get(table)
+            .map(|table_data| table_data.iter().map(|entry| entry.value().clone()).collect())
+            .unwrap_or_else(Vec::new)
+    }
+    
+    /// Get a specific entity by ID (for testing purposes)  
+    pub async fn get_entity(&self, table: &str, id: &str) -> Option<Entity> {
+        self.data
+            .get(table)
+            .and_then(|table_data| table_data.get(id).map(|entry| entry.value().clone()))
+    }
+    
+    /// Check if entity exists (for testing purposes)
+    pub async fn entity_exists(&self, table: &str, id: &str) -> bool {
+        self.data
+            .get(table)
+            .map(|table_data| table_data.contains_key(id))
+            .unwrap_or(false)
+    }
+    
+    /// Get all table names that contain entities (for testing purposes)
+    pub async fn get_table_names(&self) -> Vec<String> {
+        self.data
+            .iter()
+            .filter_map(|entry| {
+                let table_name = entry.key().clone();
+                let table_data = entry.value();
+                if !table_data.is_empty() {
+                    Some(table_name)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 
@@ -45,13 +81,11 @@ impl Default for MemoryDatabase {
 
 #[async_trait]
 impl StorageBackend for MemoryDatabase {
-    async fn get(&mut self, table: &str, id: &str) -> Result<Option<db_response::Value>> {
-        let data = self.data.read().await;
-        
-        if let Some(table_data) = data.get(table) {
+    async fn get(&self, table: &str, id: &str) -> Result<Option<db_response::Value>> {
+        if let Some(table_data) = self.data.get(table) {
             if let Some(entity) = table_data.get(id) {
                 let entity_list = crate::processor::EntityList {
-                    entities: vec![entity.clone()],
+                    entities: vec![entity.value().clone()],
                 };
                 return Ok(Some(db_response::Value::EntityList(entity_list)));
             }
@@ -66,10 +100,8 @@ impl StorageBackend for MemoryDatabase {
     }
 
     async fn delete(&self, tables: Vec<String>, ids: Vec<String>) -> Result<()> {
-        let mut data = self.data.write().await;
-        
         for (table, id) in tables.into_iter().zip(ids.into_iter()) {
-            if let Some(table_data) = data.get_mut(&table) {
+            if let Some(table_data) = self.data.get(&table) {
                 table_data.remove(&id);
             }
         }
@@ -78,16 +110,14 @@ impl StorageBackend for MemoryDatabase {
     }
 
     async fn list(
-        &mut self,
+        &self,
         table: &str,
         _filters: Vec<DbFilter>,
         _cursor: String,
         page_size: Option<u32>,
     ) -> Result<Option<db_response::Value>> {
-        let data = self.data.read().await;
-        
-        if let Some(table_data) = data.get(table) {
-            let mut entities: Vec<Entity> = table_data.values().cloned().collect();
+        if let Some(table_data) = self.data.get(table) {
+            let mut entities: Vec<Entity> = table_data.iter().map(|entry| entry.value().clone()).collect();
             
             // Sort by entity ID for consistent ordering
             entities.sort_by(|a, b| a.entity.cmp(&b.entity));
@@ -110,8 +140,6 @@ impl StorageBackend for MemoryDatabase {
     }
 
     async fn upsert(&self, tables: Vec<String>, ids: Vec<String>, entity_data: Vec<RichStruct>) -> Result<()> {
-        let mut data = self.data.write().await;
-        
         for ((table, id), rich_struct) in tables.into_iter().zip(ids.into_iter()).zip(entity_data.into_iter()) {
             // Create the entity from the RichStruct
             let entity = Entity {
@@ -123,9 +151,8 @@ impl StorageBackend for MemoryDatabase {
             };
             
             // Insert into the appropriate table
-            data.entry(table)
-                .or_insert_with(HashMap::new)
-                .insert(id, entity);
+            let table_map = self.data.entry(table).or_insert_with(DashMap::new);
+            table_map.insert(id, entity);
         }
         
         Ok(())
@@ -135,17 +162,17 @@ impl StorageBackend for MemoryDatabase {
 /// Test wrapper that makes MemoryDatabase compatible with RemoteBackend usage patterns
 /// This allows us to use MemoryDatabase in contexts where RemoteBackend is expected
 pub struct TestBackend {
-    memory_db: Arc<RwLock<MemoryDatabase>>,
+    memory_db: Arc<MemoryDatabase>,
 }
 
 impl TestBackend {
     pub fn new(memory_db: MemoryDatabase) -> Self {
         Self {
-            memory_db: Arc::new(RwLock::new(memory_db)),
+            memory_db: Arc::new(memory_db),
         }
     }
     
-    pub fn from_arc(memory_db: Arc<RwLock<MemoryDatabase>>) -> Self {
+    pub fn from_arc(memory_db: Arc<MemoryDatabase>) -> Self {
         Self {
             memory_db,
         }
@@ -154,30 +181,27 @@ impl TestBackend {
 
 #[async_trait]
 impl StorageBackend for TestBackend {
-    async fn get(&mut self, table: &str, id: &str) -> Result<Option<db_response::Value>> {
-        let mut db = self.memory_db.write().await;
-        db.get(table, id).await
+    async fn get(&self, table: &str, id: &str) -> Result<Option<db_response::Value>> {
+
+        self.memory_db.get(table, id).await
     }
 
     async fn delete(&self, table: Vec<String>, ids: Vec<String>) -> Result<()> {
-        let db = self.memory_db.read().await;
-        db.delete(table, ids).await
+        self.memory_db.delete(table, ids).await
     }
 
     async fn list(
-        &mut self,
+        &self,
         table: &str,
         filters: Vec<DbFilter>,
         cursor: String,
         page_size: Option<u32>,
     ) -> Result<Option<db_response::Value>> {
-        let mut db = self.memory_db.write().await;
-        db.list(table, filters, cursor, page_size).await
+        self.memory_db.list(table, filters, cursor, page_size).await
     }
 
     async fn upsert(&self, table: Vec<String>, id: Vec<String>, data: Vec<RichStruct>) -> Result<()> {
-        let db = self.memory_db.read().await;
-        db.upsert(table, id, data).await
+        self.memory_db.upsert(table, id, data).await
     }
 }
 

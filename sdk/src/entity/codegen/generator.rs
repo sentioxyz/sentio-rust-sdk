@@ -130,6 +130,17 @@ impl EntityGenerator {
             result.generated_files.push(module_path);
         }
 
+        // Optionally generate a store.rs that re-exports SDK store types
+        if options.generate_store {
+            let store_path = options.output_dir.join("store.rs");
+            if options.overwrite || !store_path.exists() {
+                let store_code = self.generate_store_file()?;
+                fs::write(&store_path, store_code)
+                    .with_context(|| format!("Failed to write store file: {}", store_path.display()))?;
+                result.generated_files.push(store_path);
+            }
+        }
+
 
         result.entity_count = schema.entities.len();
         Ok(result)
@@ -157,6 +168,15 @@ impl EntityGenerator {
             code.push_str("pub use store::*;\n");
         }
 
+        Ok(code)
+    }
+
+    /// Generate the store helpers module that re-exports SDK store types
+    fn generate_store_file(&self) -> Result<String> {
+        let mut code = String::new();
+        code.push_str("//! Generated store helpers\n\n");
+        code.push_str("// This file is auto-generated. Do not edit manually.\n\n");
+        code.push_str("pub use sentio_sdk::entity::store::{Store, StoreContext};\n");
         Ok(code)
     }
 }

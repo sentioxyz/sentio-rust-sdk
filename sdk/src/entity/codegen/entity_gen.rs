@@ -1,14 +1,15 @@
-//! Entity struct code generator using the codegen crate for robust code generation
+//! Entity struct code generator using the rust-codegen crate for robust code generation
 
 use crate::entity::schema::{EntitySchema, EntityType, FieldDefinition, FieldType};
 use crate::entity::schema::parser::SchemaParser;
 use crate::codegen::{CodeGenerator, CodegenResult};
 use anyhow::{Result, Context};
-use codegen::{Scope, Function, Impl, Struct};
+use rust_codegen::{Scope, Function, Impl, Struct, Field, Type};
 use std::path::Path;
 use std::fs;
+use convert_case::{Case, Casing};
 
-/// Generator for entity struct code using the codegen crate
+/// Generator for entity struct code using the rust-codegen crate
 pub struct EntityCodeGenerator;
 
 impl EntityCodeGenerator {
@@ -16,7 +17,12 @@ impl EntityCodeGenerator {
         Self
     }
 
-    /// Generate Rust code for an entity using the codegen crate
+    /// Convert camelCase or PascalCase field name to snake_case for Rust conventions
+    fn to_snake_case(&self, field_name: &str) -> String {
+        field_name.to_case(Case::Snake)
+    }
+
+    /// Generate Rust code for an entity using the rust-codegen crate
     pub fn generate_entity(&self, entity: &EntityType, schema: &EntitySchema) -> Result<String> {
         let mut header = Scope::new();
         header.raw("#![allow(non_snake_case)]");
@@ -90,7 +96,23 @@ impl EntityCodeGenerator {
             }
 
             let field_type = self.field_type_to_rust(&field.field_type, schema, field_name == "id")?;
-            let struct_field = entity_struct.field(field_name, &field_type);
+            let rust_field_name = self.to_snake_case(field_name);
+            
+            // Only add serde rename annotation if the field name actually changed
+            let annotations = if rust_field_name != *field_name {
+                vec![format!("#[serde(rename = \"{}\")]", field_name)]
+            } else {
+                vec![]
+            };
+            
+            let f = Field {
+                name: rust_field_name.clone(),
+                ty: Type::new(&field_type),
+                documentation: vec![],
+                annotation: annotations,
+            };
+
+            let struct_field = entity_struct.push_field(f);
             struct_field.vis("pub");
 
             // Add field documentation
@@ -110,25 +132,20 @@ impl EntityCodeGenerator {
 
     /// Generate Entity trait implementation
     fn generate_entity_trait_impl(&self, scope: &mut Scope, entity: &EntityType) -> Result<()> {
-        let mut entity_impl = Impl::new(&entity.name);
-        entity_impl.impl_trait("Entity");
-
         // Determine ID type
         let id_type = if entity.is_timeseries() { "i64" } else { "ID" };
 
-        // Add associated types and constants
-        entity_impl.associate_type("Id", id_type);
-        entity_impl.associate_const("TABLE_NAME", "&'static str", &format!("\"{}\"", entity.name.to_lowercase()), "");
-
-        // Add id() method
-        let mut id_fn = Function::new("id");
-        id_fn.arg_ref_self()
-             .ret("&Self::Id")
-             .line("&self.id");
-        entity_impl.push_fn(id_fn);
-
-        scope.push_impl(entity_impl);
-        scope.raw(""); // Empty line after impl
+        // Add TABLE_NAME constant manually since rust-codegen doesn't support associate_const
+        // We need to add it inside the impl block as raw content
+        let impl_code = format!(
+            "impl Entity for {} {{\n    type Id = {};\n    const TABLE_NAME: &'static str = \"{}\";\n\n    fn id(&self) -> &Self::Id {{\n        &self.id\n    }}\n}}", 
+            entity.name, 
+            id_type,
+            entity.name.to_lowercase()
+        );
+        
+        scope.raw(&impl_code);
+        scope.raw("");
         Ok(())
     }
 
@@ -136,8 +153,6 @@ impl EntityCodeGenerator {
     fn generate_helper_impl(&self, scope: &mut Scope, entity: &EntityType, schema: &EntitySchema) -> Result<()> {
         let mut helper_impl = Impl::new(&entity.name);
 
-        // Constructor method
-        // self.add_constructor_method(&mut helper_impl, entity, schema)?;
 
         // Relation getters for derived fields
         for (field_name, field) in entity.get_derived_fields() {
@@ -191,13 +206,14 @@ impl EntityCodeGenerator {
     ) -> Result<()> {
         if let Some(_target_type) = field.base_type().get_object_name() {
             let field_type = self.field_type_to_rust(&field.field_type, &EntitySchema::new(), false)?;
+            let rust_field_name = self.to_snake_case(field_name);
             
-            let mut setter = Function::new(&format!("set_{}", field_name));
+            let mut setter = Function::new(&format!("set_{}", rust_field_name));
             setter.doc(&format!("Set {} relation", field_name))
                   .vis("pub")
                   .arg_mut_self()
-                  .arg(field_name, &field_type)
-                  .line(&format!("self.{} = {};", field_name, field_name));
+                  .arg(&rust_field_name, &field_type)
+                  .line(&format!("self.{} = {};", rust_field_name, rust_field_name));
 
             impl_block.push_fn(setter);
         }
@@ -205,7 +221,7 @@ impl EntityCodeGenerator {
     }
 
     /// Add store operation convenience methods
-    fn add_store_operations(&self, impl_block: &mut Impl, entity: &EntityType) -> Result<()> {
+    fn add_store_operations(&self, _impl_block: &mut Impl, _entity: &EntityType) -> Result<()> {
         // // save method
         // let mut save_fn = Function::new("save");
         // save_fn.doc("Save this entity to the store")
@@ -465,5 +481,62 @@ mod tests {
         assert!(code.contains("TABLE_NAME"));
 
         println!("Generated code:\n{}", code);
+    }
+
+    #[test]
+    fn test_snake_case_conversion() {
+        let generator = EntityCodeGenerator::new();
+        
+        // Test various camelCase to snake_case conversions
+        assert_eq!(generator.to_snake_case("transactionHash"), "transaction_hash");
+        assert_eq!(generator.to_snake_case("blockNumber"), "block_number");
+        assert_eq!(generator.to_snake_case("firstSeen"), "first_seen");
+        assert_eq!(generator.to_snake_case("lastActive"), "last_active");
+        assert_eq!(generator.to_snake_case("totalSupply"), "total_supply");
+        assert_eq!(generator.to_snake_case("transferCount"), "transfer_count");
+        assert_eq!(generator.to_snake_case("id"), "id"); // Already snake_case
+        assert_eq!(generator.to_snake_case("timestamp"), "timestamp"); // Already snake_case
+        assert_eq!(generator.to_snake_case("APIKey"), "api_key"); // Multiple capitals
+    }
+
+    #[test]
+    fn test_generate_entity_with_camel_case_fields() {
+        let mut entity = EntityType::new("Transfer".to_string());
+        entity.description = Some("Transfer entity with camelCase field names".to_string());
+        
+        // Add id field (already snake_case)
+        let id_field = FieldDefinition::new("id".to_string(), 
+            FieldType::NonNull(Box::new(FieldType::Scalar(ScalarType::ID))));
+        entity.add_field("id".to_string(), id_field);
+
+        // Add camelCase fields
+        let tx_hash_field = FieldDefinition::new("transactionHash".to_string(), 
+            FieldType::NonNull(Box::new(FieldType::Scalar(ScalarType::String))));
+        entity.add_field("transactionHash".to_string(), tx_hash_field);
+
+        let block_num_field = FieldDefinition::new("blockNumber".to_string(), 
+            FieldType::NonNull(Box::new(FieldType::Scalar(ScalarType::BigInt))));
+        entity.add_field("blockNumber".to_string(), block_num_field);
+
+        // Add entity directive
+        let entity_directive = Directive::new("entity".to_string());
+        entity.add_directive(entity_directive);
+
+        let generator = EntityCodeGenerator::new();
+        let schema = EntitySchema::new();
+        let code = generator.generate_entity(&entity, &schema).unwrap();
+
+        // Test that the code contains snake_case field names
+        assert!(code.contains("transaction_hash: String"));
+        assert!(code.contains("block_number: BigInt"));
+        
+        // Test that serde rename attributes are present
+        assert!(code.contains("serde(rename = \"transactionHash\")"));
+        assert!(code.contains("serde(rename = \"blockNumber\")"));
+        
+        // Test that id field doesn't have serde rename (since it's already snake_case)
+        assert!(!code.contains("serde(rename = \"id\")"));
+
+        println!("Generated camelCase entity code:\n{}", code);
     }
 }

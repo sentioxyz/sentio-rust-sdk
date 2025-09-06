@@ -10,6 +10,8 @@ pub mod test_processor;
 mod tests {
     use crate::eth::eth_processor::EthProcessor;
     use crate::eth::EventMarker;
+    use crate::core::event_types::AttributeValue;
+    use crate::eth::EthHandlerType;
     use crate::testing::{addresses, chain_ids, mock_transfer_log, TestProcessorServer};
     use super::*;
 
@@ -86,7 +88,7 @@ mod tests {
         
         // Verify metadata is properly set for metrics
         let counter = &result.counters[0];
-        assert_eq!(counter.metadata.chain_id, chain_ids::ETHEREUM, "Expected correct chain_id in counter metadata");
+        assert_eq!(counter.metadata.handler_type, EthHandlerType::Event, "Expected event handler type in counter metadata");
         assert_eq!(counter.name, "transfers", "Expected counter name to be 'transfers'");
         
         // Check that we have the expected gauge metric  
@@ -95,7 +97,7 @@ mod tests {
         assert_eq!(volume_gauge.unwrap(), 1000.0, "Expected transfer_volume gauge value to be 1000.0");
         
         let gauge = &result.gauges[0];
-        assert_eq!(gauge.metadata.chain_id, chain_ids::ETHEREUM, "Expected correct chain_id in gauge metadata");
+        assert_eq!(gauge.metadata.handler_type, EthHandlerType::Event, "Expected event handler type in gauge metadata");
         assert_eq!(gauge.name, "transfer_volume", "Expected gauge name to be 'transfer_volume'");
         
         // Check that we have the expected event log
@@ -111,26 +113,26 @@ mod tests {
         assert!(event.attributes.contains_key("value"), "Expected 'value' attribute in transfer event");
         
         // Verify attribute values
-        if let Some(serde_json::Value::String(from_val)) = event.attributes.get("from") {
+        if let Some(AttributeValue::String(from_val)) = event.attributes.get("from") {
             assert!(from_val.contains("0000000000000000000000000000000000000000"), "Expected from address to be zero address");
         } else {
             panic!("Expected 'from' attribute to be a string");
         }
         
-        if let Some(serde_json::Value::String(to_val)) = event.attributes.get("to") {
+        if let Some(AttributeValue::String(to_val)) = event.attributes.get("to") {
             assert!(to_val.contains("1111111111111111111111111111111111111111"), "Expected to address to be test address 1");
         } else {
             panic!("Expected 'to' attribute to be a string");
         }
         
-        if let Some(serde_json::Value::Number(value_num)) = event.attributes.get("value") {
-            assert_eq!(value_num.as_f64().unwrap(), 1000.0, "Expected value attribute to be 1000.0");
+        if let Some(AttributeValue::Number(value_num)) = event.attributes.get("value") {
+            assert_eq!(*value_num, 1000.0, "Expected value attribute to be 1000.0");
         } else {
             panic!("Expected 'value' attribute to be a number");
         }
         
         // Verify metadata
-        assert_eq!(event.metadata.chain_id, chain_ids::ETHEREUM, "Expected correct chain_id in event metadata");
+        assert_eq!(event.metadata.handler_type, EthHandlerType::Event, "Expected event handler type in event metadata");
         assert_eq!(event.name, "transfer", "Expected event name to be 'transfer'");
         
         // Test that helper methods work correctly for nonexistent items

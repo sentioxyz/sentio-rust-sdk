@@ -6,16 +6,22 @@ authors.workspace = true
 license.workspace = true
 description = "Basic Ethereum processor example using Sentio SDK"
 
+[lib]
+name = "eth_basic"
+path = "src/lib.rs"
+
 [[bin]]
 name = "eth-basic"
 path = "src/main.rs"
 
 [dependencies]
 sentio-sdk = { path = "../../sdk" }
-rust_decimal = "1.36"
-chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 derive_builder = "0.20"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+ethers = { version = "2.0", features = ["abigen", "rustls"] }
 
 [build-dependencies]
 sentio-cli = { path = "../../cli" }

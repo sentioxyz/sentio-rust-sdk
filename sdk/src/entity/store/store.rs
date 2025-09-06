@@ -10,23 +10,22 @@ use crate::{db_response, RichValueList};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-
+ 
 /// Store implementation that uses a storage backend
 pub struct StoreImpl<B: StorageBackend> {
     /// Storage backend
-    backend: Arc<RwLock<B>>,
+    backend: Arc<B>,
 }
 
 impl<B: StorageBackend> StoreImpl<B> {
     pub fn new(backend: B) -> Self {
         Self {
-            backend: Arc::new(RwLock::new(backend)),
+            backend: Arc::new(backend),
         }
     }
 
     /// Create a new store instance with a shared backend
-    pub fn from_arc(backend: Arc<RwLock<B>>) -> Self {
+    pub fn from_arc(backend: Arc<B>) -> Self {
         Self { backend }
     }
 
@@ -69,11 +68,10 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        let mut backend = self.backend.write().await;
         let table_name = Self::get_table_name::<T>();
         let id_string = id.as_string();
 
-        if let Some(db_value) = backend.get(&table_name, &id_string).await? {
+        if let Some(db_value) = self.backend.get(&table_name, &id_string).await? {
             let entities = Self::db_value_to_entities::<T>(db_value)?;
             if let Some(entity) = entities.into_iter().next() {
                 Ok(Some(entity))
@@ -89,12 +87,11 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: serde::Serialize,
     {
-        let backend = self.backend.read().await;
         let table_name = Self::get_table_name::<T>();
         let id_string = entity.id().as_string();
         let data = T::to_rich_struct(entity)?;
 
-        backend
+        self.backend
             .upsert(vec![table_name], vec![id_string], vec![data])
             .await
     }
@@ -103,8 +100,7 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: serde::Serialize,
     {
-        let backend = self.backend.read().await;
-        let table_name = Self::get_table_name::<T>();
+         let table_name = Self::get_table_name::<T>();
         let tables = vec![table_name.clone(); entities.len()];
         let ids = entities
             .iter()
@@ -115,31 +111,28 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
             .map(|entity|  T::to_rich_struct(entity))
             .collect::<Result<Vec<_>>>()?;
 
-        backend.upsert(tables, ids, data).await
+        self.backend.upsert(tables, ids, data).await
     }
 
     async fn delete<T: Entity>(&self, id: &T::Id) -> Result<()> {
-        let backend = self.backend.read().await;
-        let table_name = Self::get_table_name::<T>();
+         let table_name = Self::get_table_name::<T>();
         let id_string = id.as_string();
 
-        backend.delete(vec![table_name], vec![id_string]).await
+        self.backend.delete(vec![table_name], vec![id_string]).await
     }
 
     async fn delete_many<T: Entity>(&self, ids: &[T::Id]) -> Result<()> {
-        let backend = self.backend.read().await;
-        let table_name = Self::get_table_name::<T>();
+         let table_name = Self::get_table_name::<T>();
         let tables = vec![table_name.clone(); ids.len()];
         let ids = ids.iter().map(|id| id.as_string()).collect::<Vec<_>>();
-        backend.delete(tables, ids).await
+        self.backend.delete(tables, ids).await
     }
 
     async fn list<T: Entity>(&self, options: ListOptions<T>) -> Result<Vec<T>>
     where
         T: for<'de> serde::Deserialize<'de> + serde::Serialize,
     {
-        let mut backend = self.backend.write().await;
-        let table_name = Self::get_table_name::<T>();
+         let table_name = Self::get_table_name::<T>();
         let mut filters = vec![];
 
         for f in options.filters {
@@ -154,7 +147,7 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
             filters.push(filter);
         }
 
-        let response = backend.list(&table_name, filters, options.cursor.unwrap_or_default(), options.limit ).await?;
+        let response = self.backend.list(&table_name, filters, options.cursor.unwrap_or_default(), options.limit ).await?;
         match response {
             Some(db_value) => {
                 let entities = Self::db_value_to_entities::<T>(db_value)?;
@@ -167,8 +160,8 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     }
 }
 
-/// Type alias for the store with RemoteBackend
-pub type Store = StoreImpl<crate::entity::store::backend::RemoteBackend>;
+/// Type alias for the store with a pluggable backend (remote in prod, memory in tests)
+pub type Store = StoreImpl<crate::entity::store::backend::Backend>;
 impl<B: StorageBackend + Default> Default for StoreImpl<B> {
     fn default() -> Self {
         Self::new(B::default())

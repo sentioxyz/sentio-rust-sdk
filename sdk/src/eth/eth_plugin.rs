@@ -20,22 +20,6 @@ pub struct EthPlugin {
     processors: Vec<Box<EthProcessorImpl>>,
 }
 
-impl EthPlugin {
-    /// Get a reference to the handler register
-    pub fn handler_register(&self) -> &HandlerRegister<HandlerType> {
-        &self.handler_register
-    }
-
-    /// Get a mutable reference to the handler register
-    pub fn handler_register_mut(&mut self) -> &mut HandlerRegister<HandlerType> {
-        &mut self.handler_register
-    }
-
-    /// Get the number of registered processors
-    pub fn processor_count(&self) -> usize {
-        self.processors.len()
-    }
-}
 
 impl Plugin for EthPlugin {
     fn handler_types(&self) -> &'static [HandlerType] {

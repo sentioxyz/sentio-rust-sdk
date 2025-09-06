@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use crate::testing::{TestEnvironment, EthTestFacet, MemoryDatabase, TestResult, TestMetadata, CounterResult, GaugeResult, EventResult};
 use crate::core::{AttributeValue, PluginManager, RuntimeContext};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use crate::{ConfigureHandlersResponse, DataBinding};
-use crate::entity::store::backend::RemoteBackend;
+use crate::entity::store::backend::Backend;
 use crate::eth::EthHandlerType;
 use crate::timeseries_result::TimeseriesType;
 
@@ -29,32 +29,27 @@ use crate::timeseries_result::TimeseriesType;
 /// ```
 pub struct TestProcessorServer {
     /// In-memory database for testing (when entity framework is ready)
-    pub db: MemoryDatabase,
+    pub db: Arc<MemoryDatabase>,
     
     /// Test environment configuration
     pub environment: TestEnvironment,
     
     /// Plugin manager for coordinating processors (public for facet access)
-    pub(crate) plugin_manager: Arc<RwLock<PluginManager>>,
+    pub(crate) plugin_manager: Arc<PluginManager>,
     config: Option<ConfigureHandlersResponse>
 }
 
 impl TestProcessorServer {
     pub(crate) async fn process_databinding(&self, data_binding: &DataBinding, test_result: &mut TestResult) {
-        // 2. Create a channel for collecting metrics and events
         let (tx, mut rx) = mpsc::channel(1024);
-        // 3. Create RuntimeContext using the test server's MemoryDatabase
-        // We need to create a TestBackend that wraps the MemoryDatabase
-        let memory_db = Arc::new(RwLock::new(self.db.clone()));
-        let test_backend = Arc::new(RwLock::new(crate::testing::TestBackend::from_arc(memory_db)));
+        
 
-        // For now, we'll use RemoteBackend but this is a placeholder for the test backend
-        let remote_backend = std::sync::Arc::new(RwLock::new(RemoteBackend::new()));
+        let remote_backend = std::sync::Arc::new(Backend::memory(self.db.clone()));
         let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend);
+        
 
-        // 4. Process the binding using PluginManager from server
-        let pm = self.plugin_manager.read().await;
-        match pm.process(&data_binding, runtime_context).await {
+
+        match self.plugin_manager.process(&data_binding, runtime_context).await {
             Ok(_process_result) => {
                 // Processing succeeded, collect any messages from the channel
                 while let Ok(msg) = rx.try_recv() {
@@ -62,10 +57,15 @@ impl TestProcessorServer {
                         self.collect_results_from_channel_response(response, test_result);
                     }
                 }
+                
+                // 6. Update test_result with the shared database that contains the processing results
+                test_result.db = self.db.clone();
             }
             Err(e) => {
                 eprintln!("Error processing log: {}", e);
                 // Continue with other logs even if one fails
+                // Still update test_result with the shared database to reflect any partial results
+                test_result.db = self.db.clone();
             }
         }
     }
@@ -113,7 +113,7 @@ impl TestProcessorServer {
             .unwrap_or_default();
 
         // Get the metric type from the `type` field
-        let metric_type = crate::timeseries_result::TimeseriesType::from_i32(ts_result.r#type)
+        let metric_type = TimeseriesType::from_i32(ts_result.r#type)
             .unwrap_or(TimeseriesType::Counter);
 
         // Extract value from data field (which is a RichStruct)
@@ -219,10 +219,10 @@ impl TestProcessorServer {
     /// ```
     pub fn new() -> Self {
         let environment = TestEnvironment::default();
-        let plugin_manager = Arc::new(RwLock::new(PluginManager::default()));
+        let plugin_manager = Arc::new(PluginManager::default());
         
         Self {
-            db: MemoryDatabase::new(),
+            db: Arc::new(MemoryDatabase::new()),
             environment,
             plugin_manager,
             config: None,
@@ -256,10 +256,7 @@ impl TestProcessorServer {
         };
         
         // Get configuration from plugin manager
-        {
-            let mut plugin_manager = self.plugin_manager.write().await;
-            plugin_manager.configure_all_plugins(request, &mut config_response);
-        }
+        self.plugin_manager.configure_all_plugins(request, &mut config_response);
    
        config_response
     }
@@ -275,9 +272,9 @@ impl crate::BindableServer for TestProcessorServer {
         let plugin_manager_arc = self.plugin_manager.clone();
         
         futures::executor::block_on(async move {
-            let mut plugin_manager = plugin_manager_arc.write().await;
-            let plugin = plugin_manager.plugin::<P>();
-            plugin.register_processor(processor);
+            plugin_manager_arc.with_plugin_mut::<P, _, _>(|plugin| {
+                plugin.register_processor(processor);
+            });
         });
     }
 }

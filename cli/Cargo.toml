@@ -9,6 +9,7 @@ description = "CLI tool for compiling Sentio processors in Rust"
 [[bin]]
 name = "cargo-sentio"
 path = "src/main.rs"
+doctest = false
 
 [dependencies]
 sentio-sdk = { path = "../sdk" }
@@ -33,7 +34,6 @@ hex = "0.4"
 gethostname = "0.5"
 # Upload dependencies  
 zip = "2.2"
-walkdir = "2.5"
 dialoguer = "0.11"
 
 [dev-dependencies]

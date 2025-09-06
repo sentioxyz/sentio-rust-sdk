@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use crate::core::plugin_manager::PluginManager;
 use anyhow::Result;
 use clap::Parser;
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
 use tracing::{debug, error, info};
-use crate::entity::store::backend::RemoteBackend;
 use crate::processor::{
     processor_v3_server::{ProcessorV3, ProcessorV3Server as TonicProcessorV3Server},
     ConfigureHandlersRequest, ConfigureHandlersResponse, ExecutionConfig, InitResponse,
@@ -40,7 +38,7 @@ pub struct ServerArgs {
 /// Sentio Processor gRPC Server
 pub struct Server {
     args: Option<ServerArgs>,
-    pub plugin_manager: Arc<tokio::sync::RwLock<PluginManager>>,
+    pub plugin_manager: Arc<PluginManager>,
 }
 
 impl Server {
@@ -48,7 +46,7 @@ impl Server {
     pub fn new() -> Self {
         Self {
             args: None,
-            plugin_manager: Arc::new(tokio::sync::RwLock::new(Default::default())),
+            plugin_manager: Arc::new(PluginManager::default()),
         }
     }
 
@@ -63,9 +61,9 @@ impl Server {
         let plugin_manager_arc = self.plugin_manager.clone();
         
         rt.block_on(async move {
-            let mut plugin_manager = plugin_manager_arc.write().await;
-            let plugin = plugin_manager.plugin::<P>();
-            plugin.register_processor(processor);
+            plugin_manager_arc.with_plugin_mut::<P, _, _>(|plugin| {
+                plugin.register_processor(processor);
+            });
         });
     }
 
@@ -273,9 +271,8 @@ impl ProcessorV3 for Server {
         info!("Initializing Sentio Processor...");
 
         // Collect unique chain IDs from all registered processors
-        let plugin_manager = self.plugin_manager.read().await;
-        let mut chain_ids = plugin_manager.get_all_chain_ids();
-        let processor_count = plugin_manager.total_processor_count();
+        let mut chain_ids = self.plugin_manager.get_all_chain_ids();
+        let processor_count = self.plugin_manager.total_processor_count();
 
         // Sort for consistent ordering
         chain_ids.sort();
@@ -347,8 +344,6 @@ impl ProcessorV3 for Server {
 
         // Use the plugin_manager's configure_all_plugins method
         self.plugin_manager
-            .write()
-            .await
             .configure_all_plugins(req_data, &mut response);
 
         debug!(
@@ -382,7 +377,7 @@ impl ProcessorV3 for Server {
         let plugin_manager = self.plugin_manager.clone();
 
         tokio::spawn(async move {
-            let mut db_backends = HashMap::new();
+            let mut db_backends: HashMap<i32, Arc<crate::entity::store::backend::Backend>> = HashMap::new();
             while let Some(stream_request) = inbound_stream.next().await {
                 match stream_request {
                     Ok(req) => {
@@ -393,7 +388,7 @@ impl ProcessorV3 for Server {
                         let process_id = req.process_id;
                         let tx_clone = tx.clone();
                         let db_backend = db_backends.entry(req.process_id).or_insert_with(|| {
-                            Arc::new(RwLock::new(RemoteBackend::new()))
+                            Arc::new(crate::entity::store::backend::Backend::remote())
                         });
                         // Process the request and send responses
                         if let Some(value) = req.value {
@@ -405,8 +400,7 @@ impl ProcessorV3 for Server {
                                     let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_clone.clone(), process_id, db_backend.clone());
 
                                     // Use PluginManager's process method with the binding and context
-                                    let pm = plugin_manager.read().await;
-                                    match pm.process(&binding, runtime_context).await {
+                                    match plugin_manager.process(&binding, runtime_context).await {
                                         Ok(result) => {
                                             debug!(
                                                 "Successfully processed binding for chain '{}'",
@@ -429,8 +423,7 @@ impl ProcessorV3 for Server {
                                     }
                                 }
                                 process_stream_request::Value::DbResult(db_result) => {
-                                    let mut backend = db_backend.write().await;
-                                    backend.receive_db_result(db_result)
+                                    db_backend.receive_db_result(db_result)
                                 }
                                 process_stream_request::Value::Start(start) => {
                                     debug!("Received start signal: {}", start);

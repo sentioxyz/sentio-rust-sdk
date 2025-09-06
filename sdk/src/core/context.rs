@@ -2,14 +2,13 @@ use crate::{processor::TimeseriesResult, ProcessStreamResponseV2, Store};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tonic::Status;
 use tracing::debug;
 // Re-export EventLogger trait from event_logger module
 pub use crate::core::event_logger::EventLogger;
 // Re-export metrics types
 pub use crate::core::metrics::{Counter, Gauge, Meter, MetricOptions, NumberValue};
-use crate::entity::store::backend::RemoteBackend;
+use crate::entity::store::backend::Backend;
 
 /// Labels type for metadata - equivalent to TypeScript Labels
 pub type Labels = HashMap<String, String>;
@@ -152,7 +151,7 @@ pub struct RuntimeContext {
     /// Metadata for this runtime context (Arc for lightweight cloning)
     pub metadata: Arc<MetaData>,
 
-    pub remote_backend: Arc<RwLock<RemoteBackend>>
+    pub remote_backend: Arc<Backend>
  }
 
 impl RuntimeContext {
@@ -166,7 +165,7 @@ impl RuntimeContext {
             tx,
             process_id,
             metadata: Arc::new(metadata),
-            remote_backend: Arc::new(RwLock::new(RemoteBackend::new()))
+            remote_backend: Arc::new(Backend::remote())
         }
     }
 
@@ -174,7 +173,7 @@ impl RuntimeContext {
     pub fn new_with_empty_metadata(
         tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV2, Status>>,
         process_id: i32,
-        remote_backend: Arc<RwLock<RemoteBackend>>
+        remote_backend: Arc<Backend>
     ) -> Self {
         let metadata = MetaData {
             address: String::new(),

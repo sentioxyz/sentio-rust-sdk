@@ -1,15 +1,11 @@
+use crate::core::AttributeValue;
 use crate::eth::EthHandlerType;
-use crate::core::{AttributeValue, RuntimeContext};
-use crate::{DataBinding, HandlerType, LogLevel};
-use crate::{Data, data};
-use ethers::types::{Log, Block, Transaction, Address, H256};
+use crate::{data, Data};
+use crate::{DataBinding, HandlerType};
+use ethers::types::{Address, Block, Log, Transaction, H256};
+use prost_types;
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde_json::Value;
-use tokio::sync::{RwLock, mpsc};
-use prost_types;
-use crate::entity::store::backend::RemoteBackend;
-use crate::timeseries_result::TimeseriesType;
 
 /// Ethereum testing facet for simulating blockchain data
 ///
@@ -214,6 +210,7 @@ pub struct TestResult {
     pub counters: Vec<CounterResult>,
     pub gauges: Vec<GaugeResult>,
     pub events: Vec<EventResult>,
+    pub db: Arc<crate::testing::MemoryDatabase>,
 }
 
 impl TestResult {

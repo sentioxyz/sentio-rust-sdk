@@ -53,11 +53,21 @@ impl EntityCodeGenerator {
         scope.import("derive_builder", "Builder");
         scope.import("serde", "{Serialize, Deserialize}");
         
-        // Add imports for derived field reference types
+        // Add imports for all relation field reference types (both derived and direct)
         for (_, field) in entity.get_derived_fields() {
             if let Some(target_type) = field.base_type().get_object_name() {
                 // Import the referenced entity type from the entities module
                 scope.import("crate::entities", target_type);
+            }
+        }
+
+        // Add imports for direct relation fields too
+        for (_, field) in entity.get_relation_fields() {
+            if !field.has_directive("derivedFrom") {
+                if let Some(target_type) = field.base_type().get_object_name() {
+                    // Import the referenced entity type from the entities module
+                    scope.import("crate::entities", target_type);
+                }
             }
         }
         
@@ -92,10 +102,21 @@ impl EntityCodeGenerator {
         // Add fields (skip derived fields)
         for (field_name, field) in &entity.fields {
             if field.has_directive("derivedFrom") {
-                continue; // Skip derived fields - they'll be methods
+                continue; // Skip derived fields - they'll be methods only
             }
 
-            let field_type = self.field_type_to_rust(&field.field_type, schema, field_name == "id")?;
+            // Determine field type - handle relations properly
+            let field_type = if field.is_relation() {
+                // For relation fields that aren't derived, we need to handle optional vs required
+                if field.field_type.is_optional() {
+                    self.field_type_to_rust_with_optional(&field.field_type, schema)?
+                } else {
+                    self.field_type_to_rust(&field.field_type, schema, field_name == "id")?
+                }
+            } else {
+                self.field_type_to_rust(&field.field_type, schema, field_name == "id")?
+            };
+            
             let rust_field_name = self.to_snake_case(field_name);
             
             // Only add serde rename annotation if the field name actually changed
@@ -122,6 +143,10 @@ impl EntityCodeGenerator {
 
             if field.is_indexed() {
                 struct_field.doc("Indexed field");
+            }
+
+            if field.is_relation() && !field.has_directive("derivedFrom") {
+                struct_field.doc("Relation field");
             }
         }
 
@@ -182,15 +207,46 @@ impl EntityCodeGenerator {
         _schema: &EntitySchema
     ) -> Result<()> {
         if let Some(target_type) = field.base_type().get_object_name() {
+            // Determine if this is a list or single relation
+            let is_list = field.field_type.is_list();
+            let return_type = if is_list {
+                format!("EntityResult<Vec<{}>>", target_type)
+            } else {
+                format!("EntityResult<Option<{}>>", target_type)
+            };
+
             let mut getter = Function::new(field_name);
             getter.doc(&format!("Get {} (derived relation)", field_name))
                   .vis("pub")
                   .set_async(true)
                   .arg_ref_self()
-                  .arg("store", "Store")
-                  .ret(&format!("EntityResult<Vec<{}>>", target_type))
-                  .line("// TODO: Implement derived field query")
-                  .line("todo!(\"Derived field queries not yet implemented\")");
+                  .ret(&return_type);
+
+            // Generate query implementation based on @derivedFrom directive
+            if let Some(derived_directive) = field.get_directive("derivedFrom") {
+                if let Some(derived_field) = derived_directive.get_string_arg("field") {
+                    if is_list {
+                        // Many relations derived field (case 2)
+                        getter.line("let store = Store::from_current_context().await?;")
+                              .line(&format!("let mut options = ListOptions::<{}>::new();", target_type))
+                              .line(&format!("options.filters.push(Filter::eq(\"{}\", self.id.clone()));", derived_field))
+                              .line(&format!("Ok(store.list(options).await?)"));
+                    } else {
+                        // Single relation derived field (case 4)
+                        getter.line("let store = Store::from_current_context().await?;")
+                              .line(&format!("let mut options = ListOptions::<{}>::new();", target_type))
+                              .line(&format!("options.filters.push(Filter::eq(\"{}\", self.id.clone()));", derived_field))
+                              .line(&format!("let results = store.list(options).await?;"))
+                              .line("Ok(results.into_iter().next())");
+                    }
+                } else {
+                    getter.line("// TODO: derivedFrom field argument missing")
+                       .line("Err(EntityError::InvalidQuery(\"derivedFrom field missing\".to_string()))");
+                }
+            } else {
+                getter.line("// TODO: derivedFrom directive missing")
+                       .line("Err(EntityError::InvalidQuery(\"derivedFrom directive missing\".to_string()))");
+            }
 
             impl_block.push_fn(getter);
         }
@@ -204,18 +260,66 @@ impl EntityCodeGenerator {
         field_name: &str,
         field: &FieldDefinition,
     ) -> Result<()> {
-        if let Some(_target_type) = field.base_type().get_object_name() {
-            let field_type = self.field_type_to_rust(&field.field_type, &EntitySchema::new(), false)?;
+        if let Some(target_type) = field.base_type().get_object_name() {
+            let is_list = field.field_type.is_list();
+            let is_optional = field.field_type.is_optional();
             let rust_field_name = self.to_snake_case(field_name);
             
-            let mut setter = Function::new(&format!("set_{}", rust_field_name));
-            setter.doc(&format!("Set {} relation", field_name))
-                  .vis("pub")
-                  .arg_mut_self()
-                  .arg(&rust_field_name, &field_type)
-                  .line(&format!("self.{} = {};", rust_field_name, rust_field_name));
+            if is_list {
+                // Many relations field (case 1) - Vec<Entity> field
+                // Add setter for the entire collection
+                let mut setter = Function::new(&format!("set_{}", rust_field_name));
+                setter.doc(&format!("Set {} relation collection", field_name))
+                      .vis("pub")
+                      .arg_mut_self()
+                      .arg(&rust_field_name, &format!("Vec<{}>", target_type))
+                      .line(&format!("self.{} = {};", rust_field_name, rust_field_name));
+                impl_block.push_fn(setter);
 
-            impl_block.push_fn(setter);
+                // Add method to add single item to collection
+                let mut add_method = Function::new(&format!("add_{}", rust_field_name.trim_end_matches('s')));
+                add_method.doc(&format!("Add single item to {} collection", field_name))
+                          .vis("pub")
+                          .arg_mut_self()
+                          .arg("item", target_type)
+                          .line(&format!("self.{}.push(item);", rust_field_name));
+                impl_block.push_fn(add_method);
+
+                // Add method to remove item from collection
+                let mut remove_method = Function::new(&format!("remove_{}", rust_field_name.trim_end_matches('s')));
+                remove_method.doc(&format!("Remove item from {} collection by ID", field_name))
+                             .vis("pub")
+                             .arg_mut_self()
+                             .arg("id", "&<Self as Entity>::Id")
+                             .line(&format!("self.{}.retain(|item| item.id() != id);", rust_field_name));
+                impl_block.push_fn(remove_method);
+
+            } else {
+                // Single relation field (case 3) - Entity or Option<Entity> field
+                let field_type = if is_optional {
+                    format!("Option<{}>", target_type)
+                } else {
+                    target_type.clone()
+                };
+
+                let mut setter = Function::new(&format!("set_{}", rust_field_name));
+                setter.doc(&format!("Set {} relation", field_name))
+                      .vis("pub")
+                      .arg_mut_self()
+                      .arg(&rust_field_name, &field_type)
+                      .line(&format!("self.{} = {};", rust_field_name, rust_field_name));
+                impl_block.push_fn(setter);
+
+                // For optional single relations, add a clear method
+                if is_optional {
+                    let mut clear_method = Function::new(&format!("clear_{}", rust_field_name));
+                    clear_method.doc(&format!("Clear {} relation", field_name))
+                               .vis("pub")
+                               .arg_mut_self()
+                               .line(&format!("self.{} = None;", rust_field_name));
+                    impl_block.push_fn(clear_method);
+                }
+            }
         }
         Ok(())
     }
@@ -267,6 +371,27 @@ impl EntityCodeGenerator {
                     Ok(type_name.clone())
                 } else {
                     Ok(format!("UnknownType<{}>", type_name))
+                }
+            }
+            FieldType::NonNull(inner) => self.field_type_to_rust(inner, schema, false),
+            FieldType::List(inner) => {
+                let inner_type = self.field_type_to_rust(inner, schema, false)?;
+                Ok(format!("Vec<{}>", inner_type))
+            }
+        }
+    }
+    
+    /// Convert FieldType to Rust type string with proper Optional handling for relations
+    fn field_type_to_rust_with_optional(&self, field_type: &FieldType, schema: &EntitySchema) -> Result<String> {
+        match field_type {
+            FieldType::Scalar(scalar) => {
+                Ok(format!("Option<{}>", scalar.rust_type()))
+            }
+            FieldType::Object(type_name) => {
+                if schema.is_entity(type_name) {
+                    Ok(format!("Option<{}>", type_name))
+                } else {
+                    Ok(format!("Option<UnknownType<{}>>", type_name))
                 }
             }
             FieldType::NonNull(inner) => self.field_type_to_rust(inner, schema, false),
@@ -538,5 +663,99 @@ mod tests {
         assert!(!code.contains("serde(rename = \"id\")"));
 
         println!("Generated camelCase entity code:\n{}", code);
+    }
+
+    #[test]
+    fn test_generate_entity_with_relations() {
+        let mut schema = EntitySchema::new();
+        
+        // Create User entity
+        let mut user_entity = EntityType::new("User".to_string());
+        let user_id_field = FieldDefinition::new("id".to_string(), 
+            FieldType::NonNull(Box::new(FieldType::Scalar(ScalarType::ID))));
+        user_entity.add_field("id".to_string(), user_id_field);
+        let user_entity_directive = Directive::new("entity".to_string());
+        user_entity.add_directive(user_entity_directive);
+        schema.add_entity("User".to_string(), user_entity);
+
+        // Create Post entity  
+        let mut post_entity = EntityType::new("Post".to_string());
+        let post_id_field = FieldDefinition::new("id".to_string(), 
+            FieldType::NonNull(Box::new(FieldType::Scalar(ScalarType::ID))));
+        post_entity.add_field("id".to_string(), post_id_field);
+        let post_entity_directive = Directive::new("entity".to_string());
+        post_entity.add_directive(post_entity_directive);
+        schema.add_entity("Post".to_string(), post_entity);
+
+        // Create Account entity with all 4 relation types
+        let mut account_entity = EntityType::new("Account".to_string());
+        let account_id_field = FieldDefinition::new("id".to_string(), 
+            FieldType::NonNull(Box::new(FieldType::Scalar(ScalarType::ID))));
+        account_entity.add_field("id".to_string(), account_id_field);
+
+        // Case 1: Many relations field - Vec<Post> (direct relation)
+        let mut posts_field = FieldDefinition::new("posts".to_string(),
+            FieldType::List(Box::new(FieldType::Object("Post".to_string()))));
+        account_entity.add_field("posts".to_string(), posts_field);
+
+        // Case 2: Many relations derived field - [User!]! @derivedFrom
+        let mut followers_field = FieldDefinition::new("followers".to_string(),
+            FieldType::NonNull(Box::new(FieldType::List(Box::new(FieldType::NonNull(Box::new(FieldType::Object("User".to_string()))))))));
+        let mut derived_directive = Directive::new("derivedFrom".to_string());
+        derived_directive.add_argument("field".to_string(), DirectiveArg::String("following".to_string()));
+        followers_field.add_directive(derived_directive);
+        account_entity.add_field("followers".to_string(), followers_field);
+
+        // Case 3: Single relation - User (direct relation, optional)
+        let single_user_field = FieldDefinition::new("owner".to_string(),
+            FieldType::Object("User".to_string()));
+        account_entity.add_field("owner".to_string(), single_user_field);
+
+        // Case 4: Single relation derived - User @derivedFrom
+        let mut derived_user_field = FieldDefinition::new("manager".to_string(),
+            FieldType::Object("User".to_string()));
+        let mut single_derived_directive = Directive::new("derivedFrom".to_string());
+        single_derived_directive.add_argument("field".to_string(), DirectiveArg::String("managedAccount".to_string()));
+        derived_user_field.add_directive(single_derived_directive);
+        account_entity.add_field("manager".to_string(), derived_user_field);
+
+        let account_entity_directive = Directive::new("entity".to_string());
+        account_entity.add_directive(account_entity_directive);
+
+        let generator = EntityCodeGenerator::new();
+        let code = generator.generate_entity(&account_entity, &schema).unwrap();
+
+        // Test Case 1: Many relations field (Vec<Post>)
+        assert!(code.contains("posts: Vec<Post>"));
+        assert!(code.contains("pub fn set_posts"));
+        assert!(code.contains("pub fn add_post"));
+        assert!(code.contains("pub fn remove_post"));
+
+        // Test Case 2: Many relations derived field
+        assert!(code.contains("pub async fn followers"));
+        assert!(code.contains("EntityResult<Vec<User>>"));
+        assert!(code.contains("Store::from_current_context().await?"));
+        assert!(code.contains("ListOptions::<User>::new()"));
+        assert!(code.contains("Filter::eq(\"following\", self.id.clone())"));
+        assert!(code.contains("Ok(store.list(options).await?)"));
+
+        // Test Case 3: Single relation (optional)
+        assert!(code.contains("owner: Option<User>"));
+        assert!(code.contains("pub fn set_owner"));
+        assert!(code.contains("pub fn clear_owner"));
+
+        // Test Case 4: Single relation derived
+        assert!(code.contains("pub async fn manager"));
+        assert!(code.contains("EntityResult<Option<User>>"));
+        assert!(code.contains("Store::from_current_context().await?"));
+        assert!(code.contains("ListOptions::<User>::new()"));
+        assert!(code.contains("Filter::eq(\"managedAccount\", self.id.clone())"));
+        assert!(code.contains("results.into_iter().next()"));
+
+        // Test imports (they might be in different format)
+        assert!(code.contains("User") && (code.contains("use") || code.contains("import")));
+        assert!(code.contains("Post") && (code.contains("use") || code.contains("import")));
+
+        println!("Generated relations entity code:\n{}", code);
     }
 }

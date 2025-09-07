@@ -162,6 +162,18 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
 
 /// Type alias for the store with a pluggable backend (remote in prod, memory in tests)
 pub type Store = StoreImpl<crate::entity::store::backend::Backend>;
+
+impl Store {
+    /// Create a Store from the current runtime context
+    pub async fn from_current_context() -> Result<Self> {
+        use crate::core::context::RUNTIME_CONTEXT;
+        
+        RUNTIME_CONTEXT.try_with(|ctx| {
+            let backend = ctx.remote_backend.clone();
+            Ok(Self::from_arc(backend))
+        }).map_err(|_| anyhow!("No runtime context available"))?
+    }
+}
 impl<B: StorageBackend + Default> Default for StoreImpl<B> {
     fn default() -> Self {
         Self::new(B::default())

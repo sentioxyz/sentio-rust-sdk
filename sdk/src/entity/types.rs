@@ -395,3 +395,11 @@ impl From<derive_builder::UninitializedFieldError> for EntityError {
         }
     }
 }
+
+impl From<anyhow::Error> for EntityError {
+    fn from(error: anyhow::Error) -> Self {
+        EntityError::Internal {
+            message: error.to_string(),
+        }
+    }
+}

@@ -14,21 +14,25 @@ use crate::entities::Transfer;
 /// Relation field
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 pub struct TokenContract {
+    #[builder(default)]
     decimals: i32,
+    id: ID,
+    #[builder(default)]
+    name: String,
     address: String,
+    #[serde(rename = "totalSupply")]
+    #[builder(default)]
+    total_supply: BigDecimal,
+    #[serde(rename = "transferCount")]
+    transfer_count: BigInt,
     #[serde(rename = "holderCount")]
     holder_count: BigInt,
     #[serde(rename = "createdAt")]
     created_at: Timestamp,
+    #[builder(default)]
     symbol: String,
-    #[serde(rename = "transferCount")]
-    transfer_count: BigInt,
-    id: ID,
-    name: String,
-    #[serde(rename = "totalSupply")]
-    total_supply: BigDecimal,
     #[serde(rename = "relatedTransfers")]
-    related_transfers: Vec<Transfer>,
+    related_transfers_ids: Vec<ID>,
 }
 
 
@@ -45,18 +49,9 @@ impl Entity for TokenContract {
 
 
 impl TokenContract {
-    /// Set relatedTransfers relation collection
-    pub fn set_related_transfers(&mut self, related_transfers: Vec<Transfer>) {
-        self.related_transfers = related_transfers;
-    }
-
-    /// Add single item to relatedTransfers collection
-    pub fn add_related_transfer(&mut self, item: Transfer) {
-        self.related_transfers.push(item);
-    }
-
-    /// Remove item from relatedTransfers collection by ID
-    pub fn remove_related_transfer(&mut self, id: &<Self as Entity>::Id) {
-        self.related_transfers.retain(|item| item.id() != id);
+    /// Get relatedTransfers relation
+    pub async fn related_transfers(&self) -> EntityResult<Vec<Transfer>> {
+        let ids = self.related_transfers_ids.iter().map(|id| <Transfer as Entity>::Id::from_string(&id.to_string())).collect::<Result<Vec<_>, _>>()?;
+        Ok(Transfer::get_many(&ids).await?)
     }
 }

@@ -14,20 +14,21 @@ use crate::entities::TokenContract;
 /// Relation field
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 pub struct Transfer {
-    from: String,
-    #[serde(rename = "transactionHash")]
-    transaction_hash: String,
-    value: BigDecimal,
+    timestamp: Timestamp,
     id: ID,
-    #[serde(rename = "blockNumber")]
-    block_number: BigInt,
+    contract: String,
     #[serde(rename = "logIndex")]
     log_index: i32,
-    to: String,
-    contract: String,
-    timestamp: Timestamp,
+    from: String,
     #[serde(rename = "tokenContract")]
-    token_contract: Option<TokenContract>,
+    #[builder(default)]
+    token_contract_id: Option<ID>,
+    to: String,
+    #[serde(rename = "blockNumber")]
+    block_number: BigInt,
+    value: BigDecimal,
+    #[serde(rename = "transactionHash")]
+    transaction_hash: String,
 }
 
 
@@ -44,13 +45,13 @@ impl Entity for Transfer {
 
 
 impl Transfer {
-    /// Set tokenContract relation
-    pub fn set_token_contract(&mut self, token_contract: Option<TokenContract>) {
-        self.token_contract = token_contract;
-    }
-
-    /// Clear tokenContract relation
-    pub fn clear_token_contract(&mut self) {
-        self.token_contract = None;
+    /// Get tokenContract relation
+    pub async fn token_contract(&self) -> EntityResult<Option<TokenContract>> {
+        if let Some(id) = &self.token_contract_id {
+            let id = <TokenContract as Entity>::Id::from_string(&id.to_string())?;
+            Ok(TokenContract::get(&id).await?)
+        } else {
+            Ok(None)
+        }
     }
 }

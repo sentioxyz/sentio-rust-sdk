@@ -18,9 +18,9 @@ pub struct DailyStats {
     #[serde(rename = "contractsActive")]
     contracts_active: BigInt,
     timestamp: Timestamp,
-    id: Int8,
     #[serde(rename = "transferCount")]
     transfer_count: BigInt,
+    id: Int8,
     #[serde(rename = "uniqueUsers")]
     unique_users: BigInt,
 }

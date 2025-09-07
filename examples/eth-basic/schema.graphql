@@ -1,5 +1,3 @@
-
-
 # Core token transfer entity for tracking ERC-20 transfers
 type Transfer @entity {
     id: ID!
@@ -11,6 +9,8 @@ type Transfer @entity {
     value: BigDecimal!
     contract: String!
     logIndex: Int!
+    # Single direct relation - each transfer references its token contract
+    tokenContract: TokenContract
 }
 
 # Approval events for ERC-20 tokens
@@ -50,6 +50,8 @@ type TokenContract @entity {
     transferCount: BigInt!
     holderCount: BigInt!
     createdAt: Timestamp!
+    # Many direct relation - a token contract can reference multiple related transfers
+    relatedTransfers: [Transfer]!
 }
 
 # Daily statistics for analytics (timeseries entity)

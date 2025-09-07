@@ -248,7 +248,7 @@ impl SchemaParser {
         // Validate derived fields
         for (field_name, field) in &entity.fields {
             if let Some(derived_from) = field.get_directive("derivedFrom") {
-                if let Some(from_field) = derived_from.get_string_arg("field") {
+                if let Some(_from_field) = derived_from.get_string_arg("field") {
                     // The field must be a list type for derived relations
                     if !field.is_list() {
                         return Err(anyhow!("Derived field '{}' in entity '{}' must be a list type", field_name, entity.name));

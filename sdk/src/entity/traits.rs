@@ -1,5 +1,6 @@
 //! Core traits for the entity framework
 
+use crate::db_request::DbOperator;
 use crate::entity::types::ID;
 use crate::entity::*;
 use crate::rich_value::Value;
@@ -8,10 +9,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use crate::db_request::DbOperator;
 
 /// Core trait that all entities must implement
-pub trait Entity: Clone + Debug + Send + Sync + 'static {
+pub trait Entity:
+    Clone + Debug + Send + Sync + 'static + Sized + serde::Serialize + for<'de> serde::Deserialize<'de>
+{
     /// The type used for this entity's primary key
     type Id: EntityId;
 
@@ -56,6 +58,41 @@ pub trait Entity: Clone + Debug + Send + Sync + 'static {
         Self: Serialize,
     {
         crate::entity::serialization::to_rich_struct(self)
+    }
+
+    // === Enhanced Entity API Methods ===
+
+    /// Get an entity by ID - convenience method for EntityX::get(id)
+    async fn get(id: &Self::Id) -> Result<Option<Self>> {
+        use crate::entity::Store;
+        let store = Store::from_current_context().await?;
+        store.get(id).await
+    }
+
+    /// Get multiple entities by their IDs - convenience method for EntityX::get_many(ids)
+    async fn get_many(ids: &[Self::Id]) -> Result<Vec<Self>> {
+        use crate::entity::Store;
+        let store = Store::from_current_context().await?;
+        store.get_many(ids).await
+    }
+
+    /// Save (upsert) this entity to the store
+    async fn save(&self) -> Result<()> {
+        use crate::entity::Store;
+        let store = Store::from_current_context().await?;
+        store.upsert(self).await
+    }
+
+    /// Delete this entity from the store
+    async fn delete(&self) -> Result<()> {
+        use crate::entity::Store;
+        let store = Store::from_current_context().await?;
+        store.delete::<Self>(self.id()).await
+    }
+
+    /// Create a query builder for finding entities of this type
+    fn find() -> QueryBuilder<Self> {
+        QueryBuilder::new()
     }
 }
 
@@ -145,6 +182,12 @@ pub trait EntityStore: Send + Sync {
     where
         T: for<'de> serde::Deserialize<'de>;
 
+    /// Get multiple entities by their IDs in a single optimized query
+    /// Uses list with IN filter when ids.len() > 1, otherwise falls back to get()
+    async fn get_many<T: Entity>(&self, ids: &[T::Id]) -> Result<Vec<T>>
+    where
+        T: for<'de> serde::Deserialize<'de> + serde::Serialize;
+
     /// Insert or update an entity
     async fn upsert<T: Entity>(&self, entity: &T) -> Result<()>
     where
@@ -211,11 +254,7 @@ impl<T: Entity> Filter<T> {
     where
         V: Into<FilterValue>,
     {
-        Self::new(
-            field.to_string(),
-            FilterOperator::Ge,
-            value.into(),
-        )
+        Self::new(field.to_string(), FilterOperator::Ge, value.into())
     }
 
     pub fn lt<V>(field: &str, value: V) -> Self
@@ -229,16 +268,22 @@ impl<T: Entity> Filter<T> {
     where
         V: Into<FilterValue>,
     {
-        Self::new(
-            field.to_string(),
-            FilterOperator::Le,
-            value.into(),
-        )
+        Self::new(field.to_string(), FilterOperator::Le, value.into())
     }
 
-
+    /// Create an IN filter for matching any value in the provided array
+    pub fn in_<V>(field: &str, values: Vec<V>) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        let filter_values: Vec<FilterValue> = values.into_iter().map(|v| v.into()).collect();
+        Self::new(
+            field.to_string(),
+            FilterOperator::In,
+            FilterValue::List(filter_values),
+        )
+    }
 }
-
 
 pub type FilterOperator = DbOperator;
 
@@ -332,5 +377,127 @@ impl<T: Entity> Default for ListOptions<T> {
 impl<T: Entity> ListOptions<T> {
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+/// Query builder for fluent entity querying API
+#[derive(Debug, Clone)]
+pub struct QueryBuilder<T: Entity> {
+    filters: Vec<Filter<T>>,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: Entity> QueryBuilder<T> {
+    /// Create a new query builder
+    pub fn new() -> Self {
+        Self {
+            filters: Vec::new(),
+            limit: None,
+            cursor: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Add an equality filter
+    pub fn where_eq<V>(mut self, field: &str, value: V) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        self.filters.push(Filter::eq(field, value));
+        self
+    }
+
+    /// Add a not-equal filter
+    pub fn where_ne<V>(mut self, field: &str, value: V) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        self.filters.push(Filter::ne(field, value));
+        self
+    }
+
+    /// Add a greater-than filter
+    pub fn where_gt<V>(mut self, field: &str, value: V) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        self.filters.push(Filter::gt(field, value));
+        self
+    }
+
+    /// Add a greater-than-or-equal filter
+    pub fn where_gte<V>(mut self, field: &str, value: V) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        self.filters.push(Filter::gte(field, value));
+        self
+    }
+
+    /// Add a less-than filter
+    pub fn where_lt<V>(mut self, field: &str, value: V) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        self.filters.push(Filter::lt(field, value));
+        self
+    }
+
+    /// Add a less-than-or-equal filter
+    pub fn where_lte<V>(mut self, field: &str, value: V) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        self.filters.push(Filter::lte(field, value));
+        self
+    }
+
+    /// Add an IN filter (field matches any of the provided values)
+    pub fn where_in<V>(mut self, field: &str, values: Vec<V>) -> Self
+    where
+        V: Into<FilterValue>,
+    {
+        self.filters.push(Filter::in_(field, values));
+        self
+    }
+
+    /// Add a custom filter
+    pub fn where_filter(mut self, filter: Filter<T>) -> Self {
+        self.filters.push(filter);
+        self
+    }
+
+    /// Set the maximum number of results to return
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Set the cursor for pagination
+    pub fn cursor(mut self, cursor: String) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    /// Execute the query and return the results
+    pub async fn list(self) -> Result<Vec<T>> {
+        use crate::entity::Store;
+        let store = Store::from_current_context().await?;
+
+        let options = ListOptions {
+            filters: self.filters,
+            limit: self.limit,
+            cursor: self.cursor,
+        };
+
+        store.list(options).await
+    }
+
+    /// Execute the query and return the first result (if any)
+    pub async fn first(self) -> Result<Option<T>> {
+        let mut results = self.limit(1).list().await?;
+        Ok(results.pop())
     }
 }

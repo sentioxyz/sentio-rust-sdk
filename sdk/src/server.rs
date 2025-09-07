@@ -1,12 +1,10 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use anyhow::Result;
-use clap::Parser;
-use tonic::transport::Server as TonicServer;
-use tracing::{debug, error, info};
 use crate::processor::processor_v3_server::ProcessorV3Server as TonicProcessorV3Server;
 use crate::service::ProcessorService;
-
+use anyhow::Result;
+use clap::Parser;
+use std::net::SocketAddr;
+use tonic::transport::Server as TonicServer;
+use tracing::{debug, error, info};
 
 /// Command line arguments for the Sentio server
 #[derive(Parser, Debug, Clone)]
@@ -50,7 +48,10 @@ impl Server {
     pub fn register_processor<T, P>(&self, processor: T)
     where
         T: crate::core::BaseProcessor + 'static,
-        P: crate::core::plugin::PluginRegister<T> + crate::core::plugin::FullPlugin + Default + 'static,
+        P: crate::core::plugin::PluginRegister<T>
+            + crate::core::plugin::FullPlugin
+            + Default
+            + 'static,
     {
         self.service.register_processor::<T, P>(processor);
     }
@@ -107,7 +108,7 @@ impl Server {
                 .add_service(
                     TonicProcessorV3Server::new(self.service.clone())
                         .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                        .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+                        .send_compressed(tonic::codec::CompressionEncoding::Gzip),
                 )
                 .serve(addr)
                 .await
@@ -116,7 +117,7 @@ impl Server {
         Ok(())
     }
 
-    /// Start the gRPC server with graceful shutdown support (blocking)  
+    /// Start the gRPC server with graceful shutdown support (blocking)
     /// This method creates its own Tokio runtime and blocks until the server stops
     /// Parses command line arguments for port and debug settings
     /// Logs any errors and exits the process if startup fails
@@ -157,7 +158,7 @@ impl Server {
                 .add_service(
                     TonicProcessorV3Server::new(self.service.clone())
                         .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                        .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+                        .send_compressed(tonic::codec::CompressionEncoding::Gzip),
                 )
                 .serve_with_shutdown(addr, shutdown_signal)
                 .await
@@ -186,7 +187,7 @@ impl Server {
             .add_service(
                 TonicProcessorV3Server::new(self.service.clone())
                     .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                    .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+                    .send_compressed(tonic::codec::CompressionEncoding::Gzip),
             )
             .serve(addr)
             .await?;
@@ -195,7 +196,7 @@ impl Server {
     }
 
     /// Start the gRPC server asynchronously with shutdown support
-    /// This is the async version for when you already have a Tokio runtime  
+    /// This is the async version for when you already have a Tokio runtime
     /// Returns Result for manual error handling (unlike the blocking start methods)
     pub async fn start_async_with_shutdown<F>(self, shutdown_signal: F) -> Result<()>
     where
@@ -220,7 +221,7 @@ impl Server {
             .add_service(
                 TonicProcessorV3Server::new(self.service.clone())
                     .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                    .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+                    .send_compressed(tonic::codec::CompressionEncoding::Gzip),
             )
             .serve_with_shutdown(addr, shutdown_signal)
             .await?;
@@ -239,7 +240,10 @@ impl crate::BindableServer for Server {
     fn register_processor<T, P>(&self, processor: T)
     where
         T: crate::core::BaseProcessor + 'static,
-        P: crate::core::plugin::PluginRegister<T> + crate::core::plugin::FullPlugin + Default + 'static,
+        P: crate::core::plugin::PluginRegister<T>
+            + crate::core::plugin::FullPlugin
+            + Default
+            + 'static,
     {
         self.register_processor::<T, P>(processor);
     }

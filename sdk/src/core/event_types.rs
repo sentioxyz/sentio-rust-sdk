@@ -1,13 +1,12 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::common::{
-    rich_value, BigDecimal as ProtoBigDecimal, BigInteger as ProtoBigInteger, RichStruct, RichValue,
-    RichValueList, TokenAmount,
+use crate::LogLevel;
+use crate::common::{RichStruct, RichValue, RichValueList, TokenAmount, rich_value};
+use crate::core::conversions::{
+    bigdecimal_to_proto, bigint_to_proto, proto_to_bigdecimal, proto_to_bigint,
 };
 use crate::entity::types::{BigDecimal, BigInt, Bytes, Timestamp};
-use crate::core::conversions::{bigint_to_proto, proto_to_bigint, bigdecimal_to_proto, proto_to_bigdecimal};
-use crate::LogLevel;
 
 /// Attribute value that can be stored in events
 #[derive(Debug, Clone)]
@@ -190,35 +189,64 @@ impl TryFrom<&AttributeValue> for RichValue {
     type Error = anyhow::Error;
     fn try_from(value: &AttributeValue) -> Result<Self> {
         Ok(match value {
-            AttributeValue::String(s) => RichValue { value: Some(rich_value::Value::StringValue(s.clone())) },
-            AttributeValue::Number(n) => RichValue { value: Some(rich_value::Value::FloatValue(*n)) },
-            AttributeValue::Integer(i) => RichValue { value: Some(rich_value::Value::Int64Value(*i)) },
-            AttributeValue::Boolean(b) => RichValue { value: Some(rich_value::Value::BoolValue(*b)) },
-            AttributeValue::LogLevel(level) => RichValue { value: Some(rich_value::Value::IntValue(*level)) },
+            AttributeValue::String(s) => RichValue {
+                value: Some(rich_value::Value::StringValue(s.clone())),
+            },
+            AttributeValue::Number(n) => RichValue {
+                value: Some(rich_value::Value::FloatValue(*n)),
+            },
+            AttributeValue::Integer(i) => RichValue {
+                value: Some(rich_value::Value::Int64Value(*i)),
+            },
+            AttributeValue::Boolean(b) => RichValue {
+                value: Some(rich_value::Value::BoolValue(*b)),
+            },
+            AttributeValue::LogLevel(level) => RichValue {
+                value: Some(rich_value::Value::IntValue(*level)),
+            },
             AttributeValue::Timestamp(ts) => {
-                let ts = prost_types::Timestamp { seconds: ts.timestamp(), nanos: ts.timestamp_subsec_nanos() as i32 };
-                RichValue { value: Some(rich_value::Value::TimestampValue(ts)) }
+                let ts = prost_types::Timestamp {
+                    seconds: ts.timestamp(),
+                    nanos: ts.timestamp_subsec_nanos() as i32,
+                };
+                RichValue {
+                    value: Some(rich_value::Value::TimestampValue(ts)),
+                }
             }
             AttributeValue::BigInt(bi) => {
                 let proto = bigint_to_proto(bi);
-                RichValue { value: Some(rich_value::Value::BigintValue(proto)) }
+                RichValue {
+                    value: Some(rich_value::Value::BigintValue(proto)),
+                }
             }
-            AttributeValue::Bytes(bytes) => RichValue { value: Some(rich_value::Value::BytesValue(bytes.to_vec())) },
+            AttributeValue::Bytes(bytes) => RichValue {
+                value: Some(rich_value::Value::BytesValue(bytes.to_vec())),
+            },
             AttributeValue::BigDecimal(bd) => {
                 let proto = bigdecimal_to_proto(bd);
-                RichValue { value: Some(rich_value::Value::BigdecimalValue(proto)) }
+                RichValue {
+                    value: Some(rich_value::Value::BigdecimalValue(proto)),
+                }
             }
-            AttributeValue::Token(t) => RichValue { value: Some(rich_value::Value::TokenValue(t.clone())) },
+            AttributeValue::Token(t) => RichValue {
+                value: Some(rich_value::Value::TokenValue(t.clone())),
+            },
             AttributeValue::Array(list) => {
                 let values: Result<Vec<_>> = list.iter().map(|v| RichValue::try_from(v)).collect();
-                RichValue { value: Some(rich_value::Value::ListValue(RichValueList { values: values? })) }
+                RichValue {
+                    value: Some(rich_value::Value::ListValue(RichValueList {
+                        values: values?,
+                    })),
+                }
             }
             AttributeValue::Object(map) => {
                 let mut fields = HashMap::new();
                 for (k, v) in map.iter() {
                     fields.insert(k.clone(), RichValue::try_from(v)?);
                 }
-                RichValue { value: Some(rich_value::Value::StructValue(RichStruct { fields })) }
+                RichValue {
+                    value: Some(rich_value::Value::StructValue(RichStruct { fields })),
+                }
             }
         })
     }
@@ -235,7 +263,11 @@ impl TryFrom<&RichValue> for AttributeValue {
             Some(rich_value::Value::Int64Value(i)) => Ok(AttributeValue::Integer(*i)),
             Some(rich_value::Value::BoolValue(b)) => Ok(AttributeValue::Boolean(*b)),
             Some(rich_value::Value::ListValue(list)) => {
-                let items: Result<Vec<_>> = list.values.iter().map(|v| AttributeValue::try_from(v)).collect();
+                let items: Result<Vec<_>> = list
+                    .values
+                    .iter()
+                    .map(|v| AttributeValue::try_from(v))
+                    .collect();
                 Ok(AttributeValue::Array(items?))
             }
             Some(rich_value::Value::StructValue(sv)) => {
@@ -251,13 +283,19 @@ impl TryFrom<&RichValue> for AttributeValue {
                     .with_timezone(&Utc);
                 Ok(AttributeValue::Timestamp(dt))
             }
-            Some(rich_value::Value::BigintValue(bi)) => Ok(AttributeValue::BigInt(proto_to_bigint(bi))),
-            Some(rich_value::Value::BytesValue(bytes)) => Ok(AttributeValue::Bytes(Bytes::from(bytes.clone()))),
+            Some(rich_value::Value::BigintValue(bi)) => {
+                Ok(AttributeValue::BigInt(proto_to_bigint(bi)))
+            }
+            Some(rich_value::Value::BytesValue(bytes)) => {
+                Ok(AttributeValue::Bytes(Bytes::from(bytes.clone())))
+            }
             Some(rich_value::Value::TokenValue(tok)) => Ok(AttributeValue::Token(tok.clone())),
             Some(rich_value::Value::BigdecimalValue(proto_bd)) => {
                 Ok(AttributeValue::BigDecimal(proto_to_bigdecimal(proto_bd)?))
             }
-            Some(rich_value::Value::NullValue(_)) | None => Err(anyhow::anyhow!("Null value unsupported for AttributeValue")),
+            Some(rich_value::Value::NullValue(_)) | None => {
+                Err(anyhow::anyhow!("Null value unsupported for AttributeValue"))
+            }
         }
     }
 }

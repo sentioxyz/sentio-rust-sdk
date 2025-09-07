@@ -4,15 +4,14 @@
 //! and Rust types without using JSON as an intermediate format. It supports GraphQL
 //! scalar types, Vec, and struct types for efficient data conversion.
 
-use crate::common::{
-    rich_value, BigDecimal as ProtoBigDecimal, BigInteger as ProtoBigInteger, RichStruct,
-    RichValue, RichValueList,
+use crate::common::{RichStruct, RichValue, RichValueList, rich_value};
+use crate::core::conversions::{
+    bigdecimal_to_proto, bigint_to_proto, proto_to_bigdecimal, proto_to_bigint,
 };
-use crate::entity::types::{BigDecimal, BigInt, Bytes, Timestamp, ID};
-use crate::core::conversions::{bigint_to_proto, proto_to_bigint, bigdecimal_to_proto, proto_to_bigdecimal};
+use crate::entity::types::{BigDecimal, BigInt, Bytes, ID, Timestamp};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
@@ -46,7 +45,7 @@ pub trait ToRichValue {
     fn to_rich_value(&self) -> Result<RichValue>;
 }
 
-/// Trait for direct deserialization from RichValue without JSON intermediate  
+/// Trait for direct deserialization from RichValue without JSON intermediate
 pub trait FromRichValue: Sized {
     fn from_rich_value(value: &RichValue) -> Result<Self>;
 }
@@ -69,7 +68,7 @@ pub fn from_rich_struct<T: DeserializeOwned>(rich_struct: &RichStruct) -> Result
     }
 }
 
-/// Convert any type implementing ToRichValue to RichValue directly  
+/// Convert any type implementing ToRichValue to RichValue directly
 pub fn to_rich_value_direct<T: ToRichValue>(value: &T) -> Result<RichValue> {
     value.to_rich_value()
 }
@@ -249,8 +248,8 @@ impl FromRichValue for BigDecimal {
             Some(rich_value::Value::FloatValue(f)) => {
                 // Convert f64 to string first, then to BigDecimal for precision
                 Ok(BigDecimal::from_str(&f.to_string())
-                   .map_err(|e| anyhow::anyhow!("Invalid decimal from float: {}", e))?)
-            },
+                    .map_err(|e| anyhow::anyhow!("Invalid decimal from float: {}", e))?)
+            }
             _ => Err(anyhow::anyhow!("Expected decimal value")),
         }
     }
@@ -1989,10 +1988,13 @@ impl<'de, 'a> serde::Deserializer<'de> for RichValueDeserializer<'a> {
                             // For BigUint, we need to convert it to u32 sequence for serde
                             {
                                 let u32_digits: Vec<u32> = biguint.to_u32_digits();
-                                let u32_values: Vec<RichValue> = u32_digits.iter().map(|&digit| RichValue {
-                                    value: Some(rich_value::Value::Int64Value(digit as i64)),
-                                }).collect();
-                                
+                                let u32_values: Vec<RichValue> = u32_digits
+                                    .iter()
+                                    .map(|&digit| RichValue {
+                                        value: Some(rich_value::Value::Int64Value(digit as i64)),
+                                    })
+                                    .collect();
+
                                 RichValue {
                                     value: Some(rich_value::Value::ListValue(RichValueList {
                                         values: u32_values,
@@ -2010,9 +2012,7 @@ impl<'de, 'a> serde::Deserializer<'de> for RichValueDeserializer<'a> {
             Some(rich_value::Value::BigdecimalValue(_)) => {
                 // Handle BigDecimal deserialization
                 match BigDecimal::from_rich_value(self.rich_value) {
-                    Ok(big_decimal) => {
-                        visitor.visit_string(big_decimal.to_string())
-                    }
+                    Ok(big_decimal) => visitor.visit_string(big_decimal.to_string()),
                     Err(e) => Err(SerdeError(format!(
                         "BigDecimal deserialization error: {}",
                         e
@@ -2372,16 +2372,43 @@ mod tests {
         let buf = bytes.as_slice();
 
         let rich_struct = RichStruct::decode(buf).unwrap();
-        let converted_entity: TestEntityWithBigTypesAndBytes = from_rich_struct(&rich_struct).unwrap();
+        let converted_entity: TestEntityWithBigTypesAndBytes =
+            from_rich_struct(&rich_struct).unwrap();
 
         assert_eq!(converted_entity.id, "test");
         assert_eq!(converted_entity.name, "Test Entity");
-        assert_eq!(converted_entity.big_int, BigInt::from_str("123456789012345678901234567890123456789012345678901234567890").unwrap());
-        assert_eq!(converted_entity.neg_big_int, BigInt::from_str("-123456789012345678901234567890123456789012345678901234567890").unwrap());
-        assert_eq!(converted_entity.big_decimal, BigDecimal::from_str("123456789012345678901234567890123456789012345678901234567890.123").unwrap());
-        assert_eq!(converted_entity.neg_big_decimal, BigDecimal::from_str("-123456789012345678901234567890123456789012345678901234567890.123").unwrap());
+        assert_eq!(
+            converted_entity.big_int,
+            BigInt::from_str("123456789012345678901234567890123456789012345678901234567890")
+                .unwrap()
+        );
+        assert_eq!(
+            converted_entity.neg_big_int,
+            BigInt::from_str("-123456789012345678901234567890123456789012345678901234567890")
+                .unwrap()
+        );
+        assert_eq!(
+            converted_entity.big_decimal,
+            BigDecimal::from_str(
+                "123456789012345678901234567890123456789012345678901234567890.123"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            converted_entity.neg_big_decimal,
+            BigDecimal::from_str(
+                "-123456789012345678901234567890123456789012345678901234567890.123"
+            )
+            .unwrap()
+        );
         assert_eq!(converted_entity.is_active, true);
-        assert_eq!(converted_entity.tags, vec!["tag1".to_string(), "tag2".to_string()]);
-        assert_eq!(converted_entity.data, Bytes::from(vec![0x01, 0x02, 0x03, 0x04, 0x05]));
+        assert_eq!(
+            converted_entity.tags,
+            vec!["tag1".to_string(), "tag2".to_string()]
+        );
+        assert_eq!(
+            converted_entity.data,
+            Bytes::from(vec![0x01, 0x02, 0x03, 0x04, 0x05])
+        );
     }
 }

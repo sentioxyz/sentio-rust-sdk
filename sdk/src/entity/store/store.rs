@@ -1,16 +1,14 @@
 //! Core store implementation for entities
 
 use crate::db_request::DbFilter;
-use crate::entity::store::StorageBackend;
-use crate::entity::traits::{
-    Entity, EntityId, EntityStore, ListOptions,
-};
 use crate::entity::ToRichValue;
-use crate::{db_response, RichValueList};
-use anyhow::{anyhow, Result};
+use crate::entity::store::StorageBackend;
+use crate::entity::traits::{Entity, EntityId, EntityStore, Filter, ListOptions};
+use crate::{RichValueList, db_response};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::sync::Arc;
- 
+
 /// Store implementation that uses a storage backend
 pub struct StoreImpl<B: StorageBackend> {
     /// Storage backend
@@ -83,6 +81,32 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
         }
     }
 
+    async fn get_many<T: Entity>(&self, ids: &[T::Id]) -> Result<Vec<T>>
+    where
+        T: for<'de> serde::Deserialize<'de> + serde::Serialize,
+    {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if ids.len() == 1 {
+            // For single ID, use the regular get method
+            match self.get(&ids[0]).await? {
+                Some(entity) => Ok(vec![entity]),
+                None => Ok(Vec::new()),
+            }
+        } else {
+            // For multiple IDs, use list with IN filter for optimization
+            let id_strings: Vec<String> = ids.iter().map(|id| id.as_string()).collect();
+
+            let filter = Filter::<T>::in_("id", id_strings);
+            let mut options = ListOptions::new();
+            options.filters.push(filter);
+
+            self.list(options).await
+        }
+    }
+
     async fn upsert<T: Entity>(&self, entity: &T) -> Result<()>
     where
         T: serde::Serialize,
@@ -100,7 +124,7 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: serde::Serialize,
     {
-         let table_name = Self::get_table_name::<T>();
+        let table_name = Self::get_table_name::<T>();
         let tables = vec![table_name.clone(); entities.len()];
         let ids = entities
             .iter()
@@ -108,21 +132,21 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
             .collect::<Vec<_>>();
         let data = entities
             .iter()
-            .map(|entity|  T::to_rich_struct(entity))
+            .map(|entity| T::to_rich_struct(entity))
             .collect::<Result<Vec<_>>>()?;
 
         self.backend.upsert(tables, ids, data).await
     }
 
     async fn delete<T: Entity>(&self, id: &T::Id) -> Result<()> {
-         let table_name = Self::get_table_name::<T>();
+        let table_name = Self::get_table_name::<T>();
         let id_string = id.as_string();
 
         self.backend.delete(vec![table_name], vec![id_string]).await
     }
 
     async fn delete_many<T: Entity>(&self, ids: &[T::Id]) -> Result<()> {
-         let table_name = Self::get_table_name::<T>();
+        let table_name = Self::get_table_name::<T>();
         let tables = vec![table_name.clone(); ids.len()];
         let ids = ids.iter().map(|id| id.as_string()).collect::<Vec<_>>();
         self.backend.delete(tables, ids).await
@@ -132,7 +156,7 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: for<'de> serde::Deserialize<'de> + serde::Serialize,
     {
-         let table_name = Self::get_table_name::<T>();
+        let table_name = Self::get_table_name::<T>();
         let mut filters = vec![];
 
         for f in options.filters {
@@ -142,20 +166,26 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
                 op: f.operator as i32,
                 value: Some(RichValueList {
                     values: vec![value],
-                })
+                }),
             };
             filters.push(filter);
         }
 
-        let response = self.backend.list(&table_name, filters, options.cursor.unwrap_or_default(), options.limit ).await?;
+        let response = self
+            .backend
+            .list(
+                &table_name,
+                filters,
+                options.cursor.unwrap_or_default(),
+                options.limit,
+            )
+            .await?;
         match response {
             Some(db_value) => {
                 let entities = Self::db_value_to_entities::<T>(db_value)?;
                 Ok(entities)
             }
-            _ => {
-                Ok(vec![])
-            }
+            _ => Ok(vec![]),
         }
     }
 }
@@ -167,13 +197,16 @@ impl Store {
     /// Create a Store from the current runtime context
     pub async fn from_current_context() -> Result<Self> {
         use crate::core::context::RUNTIME_CONTEXT;
-        
-        RUNTIME_CONTEXT.try_with(|ctx| {
-            let backend = ctx.remote_backend.clone();
-            Ok(Self::from_arc(backend))
-        }).map_err(|_| anyhow!("No runtime context available"))?
+
+        RUNTIME_CONTEXT
+            .try_with(|ctx| {
+                let backend = ctx.remote_backend.clone();
+                Ok(Self::from_arc(backend))
+            })
+            .map_err(|_| anyhow!("No runtime context available"))?
     }
 }
+
 impl<B: StorageBackend + Default> Default for StoreImpl<B> {
     fn default() -> Self {
         Self::new(B::default())
@@ -181,6 +214,4 @@ impl<B: StorageBackend + Default> Default for StoreImpl<B> {
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}

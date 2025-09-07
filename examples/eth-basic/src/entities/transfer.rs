@@ -7,24 +7,27 @@
 use sentio_sdk::entity::*;
 use derive_builder::Builder;
 use serde::{Serialize, Deserialize};
+use crate::entities::TokenContract;
 
 
 
-/// Entity: Transfer
+/// Relation field
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 pub struct Transfer {
-    #[serde(rename = "blockNumber")]
-    block_number: BigInt,
-    contract: String,
-    to: String,
+    from: String,
     #[serde(rename = "transactionHash")]
     transaction_hash: String,
-    timestamp: Timestamp,
     value: BigDecimal,
-    from: String,
+    id: ID,
+    #[serde(rename = "blockNumber")]
+    block_number: BigInt,
     #[serde(rename = "logIndex")]
     log_index: i32,
-    id: ID,
+    to: String,
+    contract: String,
+    timestamp: Timestamp,
+    #[serde(rename = "tokenContract")]
+    token_contract: Option<TokenContract>,
 }
 
 
@@ -41,4 +44,13 @@ impl Entity for Transfer {
 
 
 impl Transfer {
+    /// Set tokenContract relation
+    pub fn set_token_contract(&mut self, token_contract: Option<TokenContract>) {
+        self.token_contract = token_contract;
+    }
+
+    /// Clear tokenContract relation
+    pub fn clear_token_contract(&mut self) {
+        self.token_contract = None;
+    }
 }

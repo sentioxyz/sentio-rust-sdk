@@ -330,7 +330,7 @@ impl SchemaValidator {
 
     /// Detect circular references in entity relationships
     fn detect_circular_references(&mut self, schema: &EntitySchema) {
-        for (entity_name, entity) in &schema.entities {
+        for (entity_name, _entity) in &schema.entities {
             let mut visited = HashSet::new();
             let mut path = Vec::new();
             

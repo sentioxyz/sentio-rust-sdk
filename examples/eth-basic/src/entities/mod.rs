@@ -3,13 +3,13 @@
 // This file is auto-generated. Do not edit manually.
 
 pub mod account;
-pub mod tokencontract;
-pub mod dailystats;
-pub mod transfer;
 pub mod approval;
+pub mod dailystats;
+pub mod tokencontract;
+pub mod transfer;
 
 pub use account::Account;
-pub use tokencontract::TokenContract;
-pub use dailystats::DailyStats;
-pub use transfer::Transfer;
 pub use approval::Approval;
+pub use dailystats::DailyStats;
+pub use tokencontract::TokenContract;
+pub use transfer::Transfer;

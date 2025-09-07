@@ -1,17 +1,18 @@
 use crate::core::plugin::FullPlugin;
 use crate::core::{RuntimeContext, RUNTIME_CONTEXT};
-use crate::{ConfigureHandlersRequest, DataBinding, ProcessResult};
-use std::collections::HashMap;
+use crate::{DataBinding, ProcessResult};
+use dashmap::DashMap;
 
-#[derive(Default)]
 pub struct PluginManager {
-    pub(crate) plugins: HashMap<String, Box<dyn FullPlugin>>,
-    pub(crate) handler_type_owner: HashMap<crate::processor::HandlerType, String>,
+    pub(crate) plugins: DashMap<String, Box<dyn FullPlugin>>,
+    pub(crate) handler_type_owner: DashMap<crate::processor::HandlerType, String>,
 }
 
 impl PluginManager {
     /// Get or create a plugin by type. If plugin doesn't exist, create it using Default::default().
-    pub fn plugin<P>(&mut self) -> &mut P
+    /// This method performs the registration but returns unit since DashMap references are complex.
+    /// Use get_plugin_typed to retrieve the plugin afterwards.
+    pub fn ensure_plugin<P>(&self)
     where
         P: FullPlugin + Default + 'static,
     {
@@ -23,30 +24,41 @@ impl PluginManager {
             let temp_plugin = P::default();
             for handler_type in temp_plugin.handler_types() {
                 if self.handler_type_owner.contains_key(handler_type) {
-                    panic!(
-                        "Handler type {:?} already owned by plugin {}",
-                        handler_type, self.handler_type_owner[handler_type]
-                    );
+                    if let Some(existing_owner) = self.handler_type_owner.get(handler_type) {
+                        panic!(
+                            "Handler type {:?} already owned by plugin {}",
+                            handler_type, existing_owner.value()
+                        );
+                    }
                 }
                 self.handler_type_owner
                     .insert(*handler_type, name.to_string());
             }
             self.plugins.insert(name.to_string(), Box::new(temp_plugin));
         }
+    }
 
-        // Get the plugin and downcast it
-        let plugin_box = self.plugins.get_mut(name).unwrap();
-        let any_plugin = plugin_box.as_mut() as &mut dyn std::any::Any;
-        any_plugin
+    /// Get or create a plugin by type and execute a closure with mutable access to it
+    pub fn with_plugin_mut<P, F, R>(&self, f: F) -> R
+    where
+        P: FullPlugin + Default + 'static,
+        F: FnOnce(&mut P) -> R,
+    {
+        self.ensure_plugin::<P>();
+        let name = P::name();
+        let mut plugin_ref = self.plugins.get_mut(name).expect("Plugin should exist after ensure");
+        let any_plugin = plugin_ref.value_mut().as_mut() as &mut dyn std::any::Any;
+        let typed_plugin = any_plugin
             .downcast_mut::<P>()
-            .expect("Plugin type mismatch")
+            .expect("Plugin type mismatch");
+        f(typed_plugin)
     }
 
     /// Get the total number of processors across all plugins
     pub fn total_processor_count(&self) -> usize {
         self.plugins
-            .values()
-            .map(|plugin| plugin.processor_count())
+            .iter()
+            .map(|entry| entry.value().processor_count())
             .sum()
     }
 
@@ -55,8 +67,8 @@ impl PluginManager {
         let mut chain_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // Collect chain IDs from all plugins
-        for plugin in self.plugins.values() {
-            plugin.chain_ids().into_iter().for_each(|chain_id| {
+        for entry in self.plugins.iter() {
+            entry.value().chain_ids().into_iter().for_each(|chain_id| {
                 chain_ids.insert(chain_id);
             })
         }
@@ -65,44 +77,61 @@ impl PluginManager {
     }
 
     /// Get a plugin by name
-    pub fn get_plugin(&self, name: &str) -> Option<&dyn FullPlugin> {
-        self.plugins.get(name).map(|p| p.as_ref())
+    pub fn get_plugin(&self, name: &str) -> bool {
+        self.plugins.contains_key(name)
     }
 
-    /// Get a plugin by name with concrete type
-    pub fn get_plugin_typed<P: FullPlugin + 'static>(&self, name: &str) -> Option<&P> {
-        self.plugins.get(name).and_then(|plugin| {
-            let any_plugin = plugin.as_ref() as &dyn std::any::Any;
-            any_plugin.downcast_ref::<P>()
+    /// Check if plugin can handle a specific handler type
+    pub fn plugin_can_handle(&self, name: &str, handler_type: crate::processor::HandlerType) -> bool {
+        self.plugins.get(name)
+            .map(|entry| entry.value().can_handle_type(handler_type))
+            .unwrap_or(false)
+    }
+
+    /// Get a plugin by name with concrete type (read-only access)
+    pub fn with_plugin<P, F, R>(&self, f: F) -> Option<R>
+    where
+        P: FullPlugin + 'static,
+        F: FnOnce(&P) -> R,
+    {
+        let name = P::name();
+        self.plugins.get(name).and_then(|plugin_ref| {
+            let any_plugin = plugin_ref.value().as_ref() as &dyn std::any::Any;
+            let typed_plugin = any_plugin.downcast_ref::<P>()?;
+            Some(f(typed_plugin))
         })
     }
 
     /// Configure all plugins for a specific chain_id
     pub fn configure_all_plugins(
-        &mut self,
-        request: ConfigureHandlersRequest,
+        &self,
         response: &mut crate::processor::ConfigureHandlersResponse,
     ) {
-        for (plugin_name, plugin) in self.plugins.iter_mut() {
-            tracing::debug!("Configuring plugin: {}", plugin_name);
-            plugin.configure(&request, response);
-            tracing::debug!(
-                "Plugin '{}' contributed {} contract configs",
-                plugin_name,
-                response.contract_configs.len()
-            );
+        // First collect the plugin names to avoid borrow checker issues
+        let plugin_names: Vec<String> = self.plugins.iter().map(|entry| entry.key().clone()).collect();
+        
+        for plugin_name in plugin_names {
+            if let Some(mut plugin_entry) = self.plugins.get_mut(&plugin_name) {
+                tracing::debug!("Configuring plugin: {}", plugin_name);
+                plugin_entry.value_mut().configure(response);
+                tracing::debug!(
+                    "Plugin '{}' contributed {} contract configs",
+                    plugin_name,
+                    response.contract_configs.len()
+                );
+            }
         }
     }
 
-    /// Get all plugins that can handle a specific handler type
-    pub fn get_plugins_for_handler_type(
+    /// Get names of all plugins that can handle a specific handler type
+    pub fn get_plugin_names_for_handler_type(
         &self,
         handler_type: crate::processor::HandlerType,
-    ) -> Vec<(&String, &dyn FullPlugin)> {
+    ) -> Vec<String> {
         self.plugins
             .iter()
-            .filter(|(_, plugin)| plugin.can_handle_type(handler_type))
-            .map(|(name, plugin)| (name, plugin.as_ref()))
+            .filter(|entry| entry.value().can_handle_type(handler_type))
+            .map(|entry| entry.key().clone())
             .collect()
     }
 
@@ -112,17 +141,28 @@ impl PluginManager {
         runtime_context: RuntimeContext,
     ) -> anyhow::Result<ProcessResult> {
         let handler_type = crate::processor::HandlerType::try_from(data.handler_type)?;
-        let plugin_name = self.handler_type_owner.get(&handler_type).ok_or_else(|| {
-            anyhow::anyhow!("No plugin registered for handler type: {:?}", handler_type)
-        })?;
+        let plugin_name = self.handler_type_owner.get(&handler_type)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("No plugin registered for handler type: {:?}", handler_type)
+            })?;
 
         let plugin = self
             .plugins
-            .get(plugin_name)
+            .get(&plugin_name)
             .ok_or_else(|| anyhow::anyhow!("Plugin not found: {}", plugin_name))?;
 
         RUNTIME_CONTEXT
-            .scope(runtime_context, plugin.process_binding(data))
+            .scope(runtime_context, plugin.value().process_binding(data))
             .await
+    }
+}
+
+impl Default for PluginManager {
+    fn default() -> Self {
+        Self {
+            plugins: DashMap::new(),
+            handler_type_owner: DashMap::new(),
+        }
     }
 }

@@ -466,16 +466,20 @@ mod tests {
         manager.load().unwrap();
 
         // Set environment variables
-        env::set_var("SENTIO_TARGET_NETWORK", "polygon");
-        env::set_var("SENTIO_BUILD_TARGET", "aarch64-unknown-linux-gnu");
+        unsafe {
+            env::set_var("SENTIO_TARGET_NETWORK", "polygon");
+            env::set_var("SENTIO_BUILD_TARGET", "aarch64-unknown-linux-gnu");
+        }
 
         let effective_config = manager.get_effective_config().unwrap();
         assert_eq!(effective_config.target_network, "polygon");
         assert_eq!(effective_config.build.target, "aarch64-unknown-linux-gnu");
 
         // Clean up environment variables
-        env::remove_var("SENTIO_TARGET_NETWORK");
-        env::remove_var("SENTIO_BUILD_TARGET");
+        unsafe {
+            env::remove_var("SENTIO_TARGET_NETWORK");
+            env::remove_var("SENTIO_BUILD_TARGET");
+        }
     }
 
     #[test]

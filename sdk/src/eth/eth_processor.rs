@@ -1,14 +1,14 @@
-use crate::eth::context::EthContext;
 use crate::core::BaseProcessor;
+use crate::eth::{EthEventHandler, EventMarker};
+use crate::{AddressType, EthFetchConfig, EthPlugin};
 use chrono::prelude::*;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use ethers::types::Log;
+use derive_builder::Builder;
 use ethers::abi::Log as DecodedLog;
-use crate::{AddressType, EthFetchConfig, EthPlugin, Server};
+use ethers::types::Log;
+use std::future::Future;
+use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Builder)]
 pub struct EthBindOptions {
     pub address: String,
     /// Optional, if not set, then use eth mainnet
@@ -68,16 +68,16 @@ pub enum TimeOrBlock {
 }
 
 #[derive(Clone)]
-pub struct RawEvent {
+pub struct EthEvent {
     pub log: Log,
-    pub decoded_log: Option<DecodedLog>
+    pub decoded_log: Option<DecodedLog>,
 }
 
 #[derive(Clone)]
 pub struct EventFilter {
-    pub(crate) address : Option<String>,
-    pub(crate) address_type: Option<AddressType>,
-    pub(crate) topics: Vec<String>,
+    pub address: Option<String>,
+    pub address_type: Option<AddressType>,
+    pub topics: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -86,18 +86,110 @@ pub struct OnEventOption {
     decode_log: bool,
 }
 
-pub trait EthOnEvent {
-    fn on_event<F>(
-        self,
-        handler: fn(RawEvent, &EthContext) -> F,
-        filter: Vec<EventFilter>,
-        options: Option<OnEventOption>,
-    ) -> Self
-    where
-        F: Future<Output = ()> + Send + 'static;
+/// A configurable Ethereum processor that can register event handlers
+pub struct ConfigurableEthProcessor<P: EthProcessor> {
+    processor: P,
+    event_handlers: Vec<EventHandler>,
 }
 
-type AsyncEventHandler = Arc<dyn Fn(RawEvent, &EthContext) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+impl<P: EthProcessor> ConfigurableEthProcessor<P> {
+    /// Create a new configurable processor
+    pub fn new(processor: P) -> Self {
+        Self {
+            processor,
+            event_handlers: Vec::new(),
+        }
+    }
+
+    /// Configure an event handler for a specific event type
+    pub fn configure_event<T: EventMarker>(mut self, options: Option<OnEventOption>) -> Self
+    where
+        P: EthEventHandler<T> + Clone,
+    {
+        let filters = T::filter();
+
+        // Create a cloned processor to use as the event handler
+        let handler_processor = self.processor.clone();
+
+        let type_erased: Arc<dyn TypeErasedEventHandler> =
+            Arc::new((handler_processor, std::marker::PhantomData::<T>));
+
+        let event_handler = EventHandler {
+            handler: type_erased,
+            filters: filters.clone(),
+            options,
+            name: None,
+        };
+
+        self.event_handlers.push(event_handler);
+        self
+    }
+
+    /// Bind this configured processor to a server
+    pub fn bind<S: crate::BindableServer>(self, server: &S) {
+        let processor_arc = Arc::new(self.processor);
+        let mut processor_impl = EthProcessorImpl::new(processor_arc);
+        processor_impl.event_handlers = self.event_handlers;
+
+        server.register_processor::<EthProcessorImpl, EthPlugin>(processor_impl);
+    }
+}
+
+/// Core trait that all Ethereum processors must implement
+pub trait EthProcessor: Send + Sync + 'static {
+    /// Get the contract address this processor handles
+    fn address(&self) -> &str;
+
+    /// Get the blockchain network/chain ID
+    fn chain_id(&self) -> &str;
+
+    /// Get the processor name
+    fn name(&self) -> &str;
+
+    fn configure_event<T: EventMarker>(
+        self,
+        options: Option<OnEventOption>,
+    ) -> ConfigurableEthProcessor<Self>
+    where
+        Self: Sized,
+        Self: EthEventHandler<T> + Clone,
+    {
+        let cfg = ConfigurableEthProcessor::new(self);
+        cfg.configure_event::<T>(options)
+    }
+}
+
+// Type-erased handler that can store any EthEventHandler<T: EventMarker>
+pub trait TypeErasedEventHandler: Send + Sync {
+    fn handle_event(
+        &self,
+        event: EthEvent,
+        ctx: crate::eth::context::EthContext,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    fn get_filters(&self) -> Vec<EventFilter>;
+}
+
+// Implementation for handlers with EventMarker
+impl<H, T> TypeErasedEventHandler for (H, std::marker::PhantomData<T>)
+where
+    H: EthEventHandler<T>,
+    T: EventMarker,
+{
+    fn handle_event(
+        &self,
+        event: EthEvent,
+        ctx: crate::eth::context::EthContext,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(self.0.on_event(event, ctx))
+    }
+
+    fn get_filters(&self) -> Vec<EventFilter> {
+        T::filter()
+    }
+}
+
+
+type AsyncEventHandler = Arc<dyn TypeErasedEventHandler>;
 
 #[derive(Clone)]
 pub(crate) struct EventHandler {
@@ -123,99 +215,70 @@ impl EventHandler {
     }
 }
 
+// Internal storage for processor data - used by the plugin system
 #[derive(Clone)]
-pub struct EthProcessor {
+pub(crate) struct EthProcessorImpl {
     pub(crate) options: EthBindOptions,
     pub(crate) event_handlers: Vec<EventHandler>,
+    pub(crate) processor: Arc<dyn EthProcessor>,
 }
 
+impl EthProcessorImpl {
+    pub fn new(processor: Arc<dyn EthProcessor>) -> Self {
+        let options = EthBindOptions::new(processor.address())
+            .with_network(processor.chain_id().to_string())
+            .with_name(processor.name().to_string());
 
-impl EthProcessor {
-    /// Create a new EthProcessor for a specific contract address
-    pub fn new() -> Self {
         Self {
-            options: EthBindOptions::new(""), // Empty address to be set later in bind
+            options,
             event_handlers: Vec::new(),
+            processor,
         }
     }
 
-    /// Bind this processor to a server with the given options
-    /// This consumes the processor and registers it with the server
-    pub fn bind(mut self, server: &Server, options: EthBindOptions) {
-        self.options = options;
-        server.register_processor::<Self, EthPlugin>(self);
-    }
 
-
-
-    /// Get the number of registered event handlers
-    pub fn handler_count(&self) -> usize {
-        self.event_handlers.len()
-    }
-
-    /// Get a reference to the bind options
-    pub fn options(&self) -> &EthBindOptions {
-        &self.options
-    }
-
-    /// Get the contract address this processor is bound to
-    pub fn address(&self) -> &str {
-        &self.options.address
-    }
-
-    /// Check if this processor has any event handlers
-    pub fn has_handlers(&self) -> bool {
-        !self.event_handlers.is_empty()
-    }
-}
-
-impl BaseProcessor for EthProcessor {
-    fn chain_id(&self) -> &str {
-        if let Some(network) = &self.options.network {
-            network
-        } else {
-            "1"
-        }
-    }
-
-    fn name(&self) -> &str {
-        match &self.options.name {
-            Some(name) => name,
-            None => "eth-processor",
-        }
-    }
-
-    fn handler_count(&self) -> usize {
-        self.event_handlers.len()
-    }
-}
-
-
-
-impl EthOnEvent for EthProcessor {
-    fn on_event<F>(
-        mut self,
-        handler: fn(RawEvent, &EthContext) -> F,
-        filters: Vec<EventFilter>,
+    /// Add an event handler for a specific event type
+    #[cfg(test)]
+    pub fn add_event_handler<T: EventMarker>(
+        &mut self,
+        handler: impl EthEventHandler<T>,
         options: Option<OnEventOption>,
-    ) -> Self
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        // Wrap the handler function to match our type signature
-        let async_handler: AsyncEventHandler = Arc::new(move |event, context| {
-            let future = handler(event, context);
-            Box::pin(future)
-        });
+    ) {
+        let filters = T::filter();
+
+        let type_erased: Arc<dyn TypeErasedEventHandler> =
+            Arc::new((handler, std::marker::PhantomData::<T>));
 
         let event_handler = EventHandler {
-            handler: async_handler,
-            filters,
+            handler: type_erased,
+            filters: filters.clone(),
             options,
             name: None,
         };
 
         self.event_handlers.push(event_handler);
-        self
+    }
+
+}
+
+impl BaseProcessor for EthProcessorImpl {
+    fn chain_id(&self) -> &str {
+        self.options
+            .network
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("1")
+    }
+
+    fn name(&self) -> &str {
+        self.options
+            .name
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("eth-processor")
+    }
+
+    fn handler_count(&self) -> usize {
+        self.event_handlers.len()
     }
 }

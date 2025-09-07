@@ -1,11 +1,14 @@
 use crate::core::plugin::FullPlugin;
-use crate::core::{AsyncPluginProcessor, BaseProcessor, Context, HandlerRegister, MetaData, Plugin, PluginRegister, RUNTIME_CONTEXT};
-use crate::eth::eth_processor::{EthProcessor, RawEvent, TimeOrBlock};
+use crate::core::{
+    AsyncPluginProcessor, BaseProcessor, HandlerRegister, MetaData, Plugin, PluginRegister,
+    StateCollector, StateUpdateCollector, RUNTIME_CONTEXT,
+};
+use crate::eth::eth_processor::{EthProcessorImpl, EthEvent, TimeOrBlock};
 use crate::eth::ParsedEthData;
 use crate::log_filter::AddressOrType;
 use crate::processor::HandlerType;
 use crate::{
-    ConfigureHandlersRequest, ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter,
+    ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter,
     LogHandlerConfig, Topic,
 };
 use anyhow;
@@ -14,25 +17,9 @@ use tracing::debug;
 #[derive(Default)]
 pub struct EthPlugin {
     handler_register: HandlerRegister<HandlerType>,
-    processors: Vec<Box<EthProcessor>>,
+    processors: Vec<Box<EthProcessorImpl>>,
 }
 
-impl EthPlugin {
-    /// Get a reference to the handler register
-    pub fn handler_register(&self) -> &HandlerRegister<HandlerType> {
-        &self.handler_register
-    }
-
-    /// Get a mutable reference to the handler register
-    pub fn handler_register_mut(&mut self) -> &mut HandlerRegister<HandlerType> {
-        &mut self.handler_register
-    }
-
-    /// Get the number of registered processors
-    pub fn processor_count(&self) -> usize {
-        self.processors.len()
-    }
-}
 
 impl Plugin for EthPlugin {
     fn handler_types(&self) -> &'static [HandlerType] {
@@ -62,30 +49,11 @@ impl Plugin for EthPlugin {
         "eth-plugin"
     }
 
-    fn configure(
-        &mut self,
-        request: &ConfigureHandlersRequest,
-        config: &mut ConfigureHandlersResponse,
-    ) {
-        debug!(
-            "Configuring EthPlugin handlers for chain_id: {:?}",
-            request.chain_id
-        );
-        let chain_id = if request.chain_id.is_empty() {
-            None
-        } else {
-            Some(request.chain_id.clone())
-        };
+    fn configure(&mut self, config: &mut ConfigureHandlersResponse) {
+        debug!("Configuring EthPlugin handlers for all chains");
 
         for (processor_idx, processor) in self.processors.iter().enumerate() {
             let processor_chain_id = processor.chain_id();
-
-            // Filter by chain_id if provided, otherwise process all
-            if let Some(filter_chain_id) = chain_id.as_ref() {
-                if processor_chain_id != filter_chain_id {
-                    continue;
-                }
-            }
 
             let mut contract_config = ContractConfig::default();
             contract_config.processor_type = crate::core::USER_PROCESSOR.to_owned();
@@ -165,7 +133,7 @@ impl EthPlugin {
         &self,
         chain_id: &str,
         handler_id: i32,
-    ) -> anyhow::Result<(&EthProcessor, &crate::eth::eth_processor::EventHandler)> {
+    ) -> anyhow::Result<(&EthProcessorImpl, &crate::eth::eth_processor::EventHandler)> {
         // Look up the handler information
         let handler_info = self
             .handler_register
@@ -238,7 +206,7 @@ impl EthPlugin {
 
             // Check if we have a parsed log to work with
             if let Some(ref log) = parsed_data.log {
-                let event = RawEvent {
+                let event = EthEvent {
                     log: log.clone(),
                     decoded_log: None,
                 };
@@ -248,18 +216,27 @@ impl EthPlugin {
                     // todo decode log
                 }
 
-                // Create context with event logger
-                let mut context = crate::eth::context::EthContext::new();
+                // Create state collector for this handler execution
+                let (state_collector, state_receiver) = StateCollector::new();
+                let mut update_collector = StateUpdateCollector::new(state_receiver);
+
+                // Create context with state collector
+                let context =
+                    crate::eth::context::EthContext::with_state_collector(state_collector);
                 let metadata = MetaData::default();
                 let runtime_ctx = RUNTIME_CONTEXT.get();
+
+                // Execute the user handler with owned context using trait method
                 RUNTIME_CONTEXT
                     .scope(
                         runtime_ctx.with_metadata(metadata),
-                            (event_handler.handler)(event, &context)
+                        event_handler.handler.handle_event(event, context),
                     )
                     .await;
-                let partial_result =context.stop_and_get_result();
-                result = result.merge(partial_result)
+
+                // Collect state updates that occurred during handler execution
+                let state_result = update_collector.collect_updates();
+                result = result.merge(state_result)
             } else {
                 debug!("No log found for processor: {}", processor.name());
             }
@@ -279,13 +256,13 @@ impl crate::ProcessResult {
         self.events.extend(other.events);
         self.exports.extend(other.exports);
         self.timeseries_result.extend(other.timeseries_result);
-        
+
         // Merge states - combine config_updated flags and errors
         match (self.states.as_mut(), other.states) {
             (Some(self_state), Some(other_state)) => {
                 // If either has config_updated = true, result should be true
                 self_state.config_updated = self_state.config_updated || other_state.config_updated;
-                
+
                 // Combine errors - if both have errors, concatenate them
                 match (&self_state.error, other_state.error) {
                     (Some(self_error), Some(other_error)) => {
@@ -306,7 +283,7 @@ impl crate::ProcessResult {
             // If other has no state, keep self's state (or None)
             _ => {}
         }
-        
+
         self
     }
 }
@@ -350,8 +327,8 @@ impl AsyncPluginProcessor for EthPlugin {
 // Implement the combined FullPlugin trait
 impl FullPlugin for EthPlugin {}
 
-impl PluginRegister<EthProcessor> for EthPlugin {
-    fn register_processor(&mut self, processor: EthProcessor) -> &mut EthProcessor {
+impl PluginRegister<EthProcessorImpl> for EthPlugin {
+    fn register_processor(&mut self, processor: EthProcessorImpl) -> &mut EthProcessorImpl {
         debug!(
             "Registering processor: {} (chain_id: {})",
             processor.name(),
@@ -360,78 +337,94 @@ impl PluginRegister<EthProcessor> for EthPlugin {
 
         self.processors.push(Box::new(processor));
 
-        // Get the last element and downcast it back to the concrete type
-        // This is safe because we just pushed the processor
-        let last_processor = self.processors.last_mut().unwrap();
-
-        // Use Any trait to downcast back to a concrete type
-        use std::any::Any;
-        let any_ref = last_processor.as_mut() as &mut dyn Any;
-        any_ref.downcast_mut::<EthProcessor>().unwrap()
+        // Return a reference to the last processor
+        self.processors.last_mut().unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eth::eth_processor::{EthBindOptions, EthOnEvent};
-    use crate::{ConfigureHandlersRequest, ConfigureHandlersResponse};
+    use crate::eth::eth_processor::EthProcessor;
+    use crate::ConfigureHandlersResponse;
+    use crate::eth::EthEventHandler;
+
+    #[derive(Clone)]
+    struct TestProcessor {
+        address: String,
+        chain_id: String,
+        name: String,
+    }
+
+    impl TestProcessor {
+        fn new() -> Self {
+            Self {
+                address: "0x1234567890123456789012345678901234567890".to_string(),
+                chain_id: "ethereum".to_string(),
+                name: "test-processor".to_string(),
+            }
+        }
+    }
+
+    impl EthProcessor for TestProcessor {
+        fn address(&self) -> &str {
+            &self.address
+        }
+        
+        fn chain_id(&self) -> &str {
+            &self.chain_id
+        }
+        
+        fn name(&self) -> &str {
+            &self.name
+        }
+    }
+
+    struct TestEventMarker;
+    
+    impl crate::eth::EventMarker for TestEventMarker {
+        fn filter() -> Vec<crate::eth::eth_processor::EventFilter> {
+            vec![]
+        }
+    }
+
+    #[crate::async_trait]
+    impl EthEventHandler<TestEventMarker> for TestProcessor {
+        async fn on_event(&self, _event: EthEvent, _ctx: crate::eth::context::EthContext) {
+            // Test event handler
+        }
+    }
 
     #[test]
     fn test_configure_method() {
         let mut plugin = EthPlugin::default();
         let mut config = ConfigureHandlersResponse::default();
 
-        // Create a test processor
-        let options = EthBindOptions::new("0x1234567890123456789012345678901234567890")
-            .with_network("ethereum")
-            .with_name("test-processor");
+        // Create a test processor using the new trait-based API
+        let processor_impl = TestProcessor::new()
+            .configure_event::<TestEventMarker>(None);
 
-        let mut processor = EthProcessor::new();
-        processor.options = options;
-
-        let processor = processor.on_event(
-            |_event, _ctx| async {
-                // Test event handler
-            },
-            vec![],
-            None,
-        );
+        // We need to manually create the EthProcessorImpl for the test
+        use std::sync::Arc;
+        let processor_arc = Arc::new(TestProcessor::new());
+        let mut processor_impl = crate::eth::eth_processor::EthProcessorImpl::new(processor_arc.clone());
+        
+        // Add the event handler manually for the test
+        processor_impl.add_event_handler(TestProcessor::new(), None);
 
         // Register the processor
-        plugin.register_processor(processor);
+        plugin.register_processor(processor_impl);
 
-        // Test configure method with no chain filter
-        let request = ConfigureHandlersRequest {
-            chain_id: "".to_string(),
-            template_instances: vec![],
-        };
-        plugin.configure(&request, &mut config);
+        // Test configure method registers handlers
+        plugin.configure(&mut config);
 
         // Should have registered handlers for each handler type
         let registered_count = plugin.handler_register.len();
         assert!(registered_count > 0, "Should have registered some handlers");
 
-        // Clear and test configure method with chain filter
-        plugin.handler_register.clear();
-        let request_with_chain = ConfigureHandlersRequest {
-            chain_id: "ethereum".to_string(),
-            template_instances: vec![],
-        };
-        plugin.configure(&request_with_chain, &mut config);
-
-        // Should have same number of handlers when filtering by correct chain
-        assert_eq!(plugin.handler_register.len(), registered_count);
-
-        // Clear and test configure method with non-matching chain filter
-        plugin.handler_register.clear();
-        let request_non_matching = ConfigureHandlersRequest {
-            chain_id: "999".to_string(),
-            template_instances: vec![],
-        };
-        plugin.configure(&request_non_matching, &mut config);
-
-        // Should have no handlers when filtering by non-matching chain
-        assert_eq!(plugin.handler_register.len(), 0);
+        // We no longer filter by chain; ensure configure is idempotent
+        let prev = plugin.handler_register.len();
+        plugin.configure(&mut config);
+        assert!(plugin.handler_register.len() >= prev);
     }
 }

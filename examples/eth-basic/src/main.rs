@@ -1,24 +1,18 @@
-use sentio_sdk::eth::eth_processor::*;
 use sentio_sdk::Server;
+
+mod processor;
+mod entities;
+use processor::*;
+use sentio_sdk::eth::eth_processor::EthProcessor;
 
 fn main() {
     let server = Server::new();
 
-    // Create a processor with event handlers and bind it to the server
-    EthProcessor::new()
-        .on_event(
-            |_event, _ctx| async {
-                println!("Processing event!");
-            },
-            Vec::new(),
-            None,
-        )
-        .bind(
-            &server,
-            EthBindOptions::new("0x1234567890123456789012345678901234567890")
-                .with_name("My ETH Processor")
-                .with_network("1"),
-        );
-
+    let processor = MyEthProcessor::new();
+    processor
+        .configure_event::<TransferEvent>(None)
+        .configure_event::<ApprovalEvent>(None)
+        .bind(&server);
+    
     server.start();
 }

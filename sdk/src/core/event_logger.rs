@@ -1,147 +1,14 @@
 use anyhow::Result;
-use tracing::debug;
 use crate::{LogLevel, processor::TimeseriesResult};
 use std::collections::HashMap;
+// Re-export moved types for backward compatibility of module path users
+pub use super::event_types::{AttributeValue, Event};
 
-/// Attribute value that can be stored in events
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(untagged)]
-pub enum AttributeValue {
-    String(String),
-    Number(f64),
-    Integer(i64),
-    Boolean(bool),
-    LogLevel(i32), // Store LogLevel as i32 for serialization
-    Array(Vec<AttributeValue>),
-    Object(HashMap<String, AttributeValue>),
-}
+// Event implementation moved to event_types.rs
 
-/// Event builder with fluent API for creating events
-#[derive(Debug, Clone)]
-pub struct Event {
-    name: String,
-    distinct_id: Option<String>,
-    severity: Option<LogLevel>,
-    message: Option<String>,
-    attributes: HashMap<String, AttributeValue>,
-}
+// Converters moved to event_types.rs
 
-impl Event {
-    /// Create a new event with the given name
-    pub fn name(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            distinct_id: None,
-            severity: None,
-            message: None,
-            attributes: HashMap::new(),
-        }
-    }
-    
-    /// Set the distinct ID for the event
-    pub fn distinct_id(mut self, distinct_id: &str) -> Self {
-        self.distinct_id = Some(distinct_id.to_string());
-        self
-    }
-    
-    /// Set the log level for the event
-    pub fn level(mut self, level: LogLevel) -> Self {
-        self.severity = Some(level);
-        self
-    }
-    
-    /// Set the message for the event
-    pub fn message(mut self, message: &str) -> Self {
-        self.message = Some(message.to_string());
-        self
-    }
-    
-    /// Add a string attribute to the event
-    pub fn attr(mut self, key: &str, value: impl Into<AttributeValue>) -> Self {
-        self.attributes.insert(key.to_string(), value.into());
-        self
-    }
-    
-    /// Get the event name
-    pub fn get_name(&self) -> &str {
-        &self.name
-    }
-    
-    /// Get the distinct ID
-    pub fn get_distinct_id(&self) -> Option<&str> {
-        self.distinct_id.as_deref()
-    }
-    
-    /// Get the severity level
-    pub fn get_severity(&self) -> Option<LogLevel> {
-        self.severity
-    }
-    
-    /// Get the message
-    pub fn get_message(&self) -> Option<&str> {
-        self.message.as_deref()
-    }
-    
-    /// Get the attributes
-    pub fn get_attributes(&self) -> &HashMap<String, AttributeValue> {
-        &self.attributes
-    }
-}
-
-/// Implement From conversions for common types to AttributeValue
-impl From<String> for AttributeValue {
-    fn from(value: String) -> Self {
-        AttributeValue::String(value)
-    }
-}
-
-impl From<&str> for AttributeValue {
-    fn from(value: &str) -> Self {
-        AttributeValue::String(value.to_string())
-    }
-}
-
-impl From<f64> for AttributeValue {
-    fn from(value: f64) -> Self {
-        AttributeValue::Number(value)
-    }
-}
-
-impl From<i64> for AttributeValue {
-    fn from(value: i64) -> Self {
-        AttributeValue::Integer(value)
-    }
-}
-
-impl From<i32> for AttributeValue {
-    fn from(value: i32) -> Self {
-        AttributeValue::Integer(value as i64)
-    }
-}
-
-impl From<bool> for AttributeValue {
-    fn from(value: bool) -> Self {
-        AttributeValue::Boolean(value)
-    }
-}
-
-impl From<LogLevel> for AttributeValue {
-    fn from(value: LogLevel) -> Self {
-        AttributeValue::LogLevel(value as i32)
-    }
-}
-
-impl From<HashMap<String, AttributeValue>> for AttributeValue {
-    fn from(value: HashMap<String, AttributeValue>) -> Self {
-        AttributeValue::Object(value)
-    }
-}
-
-impl From<Vec<AttributeValue>> for AttributeValue {
-    fn from(value: Vec<AttributeValue>) -> Self {
-        AttributeValue::Array(value)
-    }
-}
+// Conversions are implemented in core::event_types
 
 /// Pure event logger struct that works with runtime context
 #[derive(Debug, Clone)]
@@ -219,7 +86,7 @@ impl EventLogger {
         // Add attributes
         for (key, value) in event.get_attributes() {
             let normalized_key = self.normalize_key(key);
-            let rich_value = self.attribute_to_rich_value(value)?;
+            let rich_value: crate::common::RichValue = value.try_into()?;
             fields.insert(normalized_key, rich_value);
         }
         
@@ -241,83 +108,6 @@ impl EventLogger {
         normalized
     }
     
-    /// Convert AttributeValue to RichValue following TypeScript normalization patterns
-    fn attribute_to_rich_value(&self, value: &AttributeValue) -> Result<crate::common::RichValue> {
-        use crate::common::{RichValue, rich_value};
-        
-        let rich_value = match value {
-            AttributeValue::String(s) => {
-                // Truncate strings to max 1000 chars for attribute values
-                let truncated = if s.len() > 1000 {
-                    debug!("String attribute truncated to 1000 characters: {}", &s[..50]);
-                    s.chars().take(1000).collect()
-                } else {
-                    s.clone()
-                };
-                
-                RichValue {
-                    value: Some(rich_value::Value::StringValue(truncated))
-                }
-            },
-            AttributeValue::Number(n) => {
-                if n.is_nan() || n.is_infinite() {
-                    return Err(anyhow::anyhow!("Cannot submit NaN or Infinity value"));
-                }
-                
-                RichValue {
-                    value: Some(rich_value::Value::FloatValue(*n))
-                }
-            },
-            AttributeValue::Integer(i) => {
-                RichValue {
-                    value: Some(rich_value::Value::Int64Value(*i))
-                }
-            },
-            AttributeValue::Boolean(b) => {
-                RichValue {
-                    value: Some(rich_value::Value::BoolValue(*b))
-                }
-            },
-            AttributeValue::LogLevel(level) => {
-                RichValue {
-                    value: Some(rich_value::Value::IntValue(*level))
-                }
-            },
-            AttributeValue::Array(arr) => {
-                // Convert array to RichValueList following TypeScript patterns
-                let mut rich_values = Vec::new();
-                
-                for item in arr {
-                    let rich_value = self.attribute_to_rich_value(item)?;
-                    rich_values.push(rich_value);
-                }
-                
-                RichValue {
-                    value: Some(rich_value::Value::ListValue(crate::common::RichValueList {
-                        values: rich_values
-                    }))
-                }
-            },
-            AttributeValue::Object(obj) => {
-                // Convert nested object to RichStruct
-                let mut nested_fields = HashMap::new();
-                
-                for (key, nested_value) in obj {
-                    let normalized_key = self.normalize_key(key);
-                    let rich_value = self.attribute_to_rich_value(nested_value)?;
-                    nested_fields.insert(normalized_key, rich_value);
-                }
-                
-                RichValue {
-                    value: Some(rich_value::Value::StructValue(crate::common::RichStruct {
-                        fields: nested_fields
-                    }))
-                }
-            }
-        };
-        
-        Ok(rich_value)
-    }
 }
 
 impl Default for EventLogger {

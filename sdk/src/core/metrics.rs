@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crate::processor::{MetricValue, metric_value::Value, TimeseriesResult};
+use derive_builder::Builder;
 use super::Labels;
 
 /// Numeric value that can be converted to MetricValue
@@ -64,7 +65,7 @@ impl From<&str> for NumberValue {
 }
 
 /// Options for configuring metrics
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Builder)]
 pub struct MetricOptions {
     pub unit: Option<String>,
     pub description: Option<String>,
@@ -75,6 +76,7 @@ pub struct MetricOptions {
 #[derive(Debug, Clone)]
 pub struct Counter {
     name: String,
+    #[allow(dead_code)]
     options: MetricOptions,
 }
 
@@ -197,6 +199,7 @@ impl Counter {
 #[derive(Debug, Clone)]
 pub struct Gauge {
     name: String,
+    #[allow(dead_code)]
     options: MetricOptions,
 }
 

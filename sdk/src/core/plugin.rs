@@ -1,4 +1,4 @@
-use crate::{BaseProcessor, ConfigureHandlersRequest, ConfigureHandlersResponse};
+use crate::{BaseProcessor, ConfigureHandlersResponse};
 use crate::processor::HandlerType;
 use std::any::Any;
 
@@ -14,9 +14,9 @@ pub trait Plugin: Send + Sync + Any {
 
     fn name() -> &'static str where Self: Sized;
 
-    /// Configure handlers for processors, optionally filtering by chain_id
-    /// This method registers all handlers from processors with the plugin's own handler register
-    fn configure(&mut self, request: &ConfigureHandlersRequest, config: &mut ConfigureHandlersResponse);
+    /// Configure handlers for all processors managed by the plugin
+    /// This method registers all handlers with the plugin's handler register
+    fn configure(&mut self, config: &mut ConfigureHandlersResponse);
     
     /// Process a data binding request for a specific handler type
     /// Returns whether this plugin can handle the given handler type

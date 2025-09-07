@@ -433,7 +433,7 @@ impl SentioApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    
 
     fn create_test_client() -> SentioApiClient {
         let config = ApiClientConfig {

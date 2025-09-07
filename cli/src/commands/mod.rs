@@ -1,6 +1,6 @@
 pub mod build;
 pub mod init;
-pub mod gen;
+pub mod generate;
 pub mod upload;
 pub mod auth;
 pub mod contract;

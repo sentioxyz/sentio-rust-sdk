@@ -1,0 +1,195 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use anyhow::Result;
+use tonic::{Request, Response, Status};
+use tracing::{debug, error, info};
+
+use crate::core::plugin_manager::PluginManager;
+use crate::processor::{
+    processor_v3_server::ProcessorV3,
+    ConfigureHandlersResponse,
+    ProcessConfigRequest, ProcessConfigResponse,
+    ProcessStreamRequest, ProcessStreamResponseV3,
+    StartRequest, UpdateTemplatesRequest,
+};
+
+#[derive(Clone)]
+pub struct ProcessorService {
+    pub plugin_manager: Arc<PluginManager>,
+}
+
+impl ProcessorService {
+    pub fn new() -> Self {
+        Self { plugin_manager: Arc::new(PluginManager::default()) }
+    }
+
+    pub fn register_processor<T, P>(&self, processor: T)
+    where
+        T: crate::core::BaseProcessor + 'static,
+        P: crate::core::plugin::PluginRegister<T> + crate::core::plugin::FullPlugin + Default + 'static,
+    {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let plugin_manager_arc = self.plugin_manager.clone();
+
+        rt.block_on(async move {
+            plugin_manager_arc.with_plugin_mut::<P, _, _>(|plugin| {
+                plugin.register_processor(processor);
+            });
+        });
+    }
+}
+
+#[tonic::async_trait]
+impl ProcessorV3 for ProcessorService {
+    type ProcessBindingsStreamStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<ProcessStreamResponseV3, Status>> + Send>,
+    >;
+
+    async fn start(&self, request: Request<StartRequest>) -> Result<Response<()>, Status> {
+        debug!("Received start request from client: {:?}", request.remote_addr());
+        let req = request.into_inner();
+        info!("Start called with {} template(s)", req.template_instances.len());
+        Ok(Response::new(()))
+    }
+
+    async fn get_config(
+        &self,
+        _request: Request<ProcessConfigRequest>,
+    ) -> Result<Response<ProcessConfigResponse>, Status> {
+        debug!("Received get_config request");
+
+        // Build handler configs using existing plugin mechanism
+        let mut handler_config = ConfigureHandlersResponse {
+            contract_configs: vec![],
+            account_configs: vec![],
+        };
+
+        // Configure for all chains/processors
+        self.plugin_manager.configure_all_plugins(&mut handler_config);
+
+        let response = ProcessConfigResponse {
+            config: None,
+            execution_config: Some(crate::processor::ExecutionConfig {
+                sequential: false,
+                force_exact_block_time: false,
+                handler_order_inside_transaction: 0,
+                process_binding_timeout: 30,
+                skip_start_block_validation: false,
+                rpc_retry_times: 3,
+                eth_abi_decoder_config: None,
+            }),
+            contract_configs: handler_config.contract_configs,
+            template_instances: vec![],
+            account_configs: handler_config.account_configs,
+            metric_configs: vec![],
+            event_tracking_configs: vec![],
+            export_configs: vec![],
+            event_log_configs: vec![],
+            db_schema: None,
+        };
+
+        info!("get_config assembled {} contract configs", response.contract_configs.len());
+        Ok(Response::new(response))
+    }
+
+    async fn update_templates(
+        &self,
+        request: Request<UpdateTemplatesRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        info!(
+            "UpdateTemplates for chain {} with {} template(s)",
+            req.chain_id,
+            req.template_instances.len()
+        );
+        Ok(Response::new(()))
+    }
+
+    async fn process_bindings_stream(
+        &self,
+        request: Request<tonic::Streaming<ProcessStreamRequest>>,
+    ) -> Result<Response<Self::ProcessBindingsStreamStream>, Status> {
+        use crate::processor::process_stream_request;
+        use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+
+        debug!(
+            "Starting process_bindings_stream from client: {:?}",
+            request.remote_addr()
+        );
+        info!("Starting bindings stream processing");
+
+        let mut inbound_stream = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(1000);
+
+        // Clone the plugin manager Arc for sharing between tasks
+        let plugin_manager = self.plugin_manager.clone();
+
+        tokio::spawn(async move {
+            let mut db_backends: HashMap<i32, Arc<crate::entity::store::backend::Backend>> = HashMap::new();
+            while let Some(stream_request) = inbound_stream.next().await {
+                match stream_request {
+                    Ok(req) => {
+                        debug!(
+                            "Received stream request with process_id: {}",
+                            req.process_id
+                        );
+                        let process_id = req.process_id;
+                        let tx_clone = tx.clone();
+                        let db_backend = db_backends.entry(req.process_id).or_insert_with(|| {
+                            Arc::new(crate::entity::store::backend::Backend::remote())
+                        });
+                        // Process the request and send responses
+                        if let Some(value) = req.value {
+                            match value {
+                                process_stream_request::Value::Binding(binding) => {
+                                    debug!("Processing binding for chain_id: {}", binding.chain_id);
+
+                                    // Create RuntimeContext with the tx clone for event logging and empty metadata
+                                    let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_clone.clone(), process_id, db_backend.clone());
+
+                                    // Use PluginManager's process method with the binding and context
+                                    match plugin_manager.process(&binding, runtime_context).await {
+                                        Ok(result) => {
+                                            debug!(
+                                                "Successfully processed binding for chain '{}'",
+                                                binding.chain_id
+                                            );
+                                            let response = ProcessStreamResponseV3 {
+                                                process_id,
+                                                value: Some(crate::processor::process_stream_response_v3::Value::Result(result)),
+                                            };
+                                            if let Err(e) = tx_clone.send(Ok(response)).await {
+                                                error!("Failed to send response: {}", e);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to process binding for chain '{}': {}",
+                                                binding.chain_id, e
+                                            );
+                                        }
+                                    }
+                                }
+                                process_stream_request::Value::DbResult(db_result) => {
+                                    db_backend.receive_db_result(db_result)
+                                }
+                                process_stream_request::Value::Start(start) => {
+                                    debug!("Received start signal: {}", start);
+                                    // Handle start signal if needed
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error receiving stream request: {}", e);
+                        break;
+                    }
+                }
+            }
+            debug!("Stream processing task completed");
+        });
+
+        let response_stream = ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(response_stream)))
+    }
+}

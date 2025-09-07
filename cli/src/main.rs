@@ -3,6 +3,7 @@ use anyhow::Result;
 
 mod commands;
 mod utils;
+mod codegen;
 
 use commands::*;
 
@@ -188,7 +189,7 @@ async fn main() -> Result<()> {
             command.execute().await?;
         }
         Commands::Gen { no_handlers, no_contracts, contract } => {
-            let command = gen::GenCommand {
+            let command = generate::GenCommand {
                 generate_handlers: !no_handlers,
                 generate_contracts: !no_contracts,
                 target_contract: contract,

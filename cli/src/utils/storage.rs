@@ -97,20 +97,6 @@ impl CredentialStore {
         }
     }
 
-    /// List all configured hosts
-    pub fn list_hosts(&self) -> Result<Vec<String>> {
-        if !self.config_file.exists() {
-            return Ok(Vec::new());
-        }
-
-        let content = fs::read_to_string(&self.config_file)
-            .context("Failed to read config file")?;
-        
-        let config: SentioConfig = serde_json::from_str(&content)
-            .context("Failed to parse config file")?;
-
-        Ok(config.hosts.keys().cloned().collect())
-    }
 
     /// Remove credentials for a given host
     pub fn remove_credentials(&self, host: &str) -> Result<bool> {

@@ -3,6 +3,7 @@ pub mod handler_type;
 pub mod eth_plugin;
 pub mod context;
 mod eth_types;
+mod tests;
 
 pub use eth_types::*;
 

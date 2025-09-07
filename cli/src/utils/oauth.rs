@@ -370,7 +370,7 @@ mod tests {
         assert!(url.contains("https://auth.sentio.xyz"));
         assert!(url.contains("code_challenge=test_challenge"));
         assert!(url.contains("code_challenge_method=S256"));
-        assert!(url.contains(&format!("redirect_uri=http%3A//localhost%3A{}/callback", OAUTH_PORT)));
+        assert!(url.contains("redirect_uri=https%3A%2F%2Fapp.sentio.xyz%2Fredirect%2Fsdk"));
     }
 
     #[test]

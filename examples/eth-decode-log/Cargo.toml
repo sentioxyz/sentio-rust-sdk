@@ -22,3 +22,6 @@ lru = "0.12"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 ethers = { version = "2.0", features = ["abigen", "rustls"] }
+
+[build-dependencies]
+sentio-cli = { path = "../../cli" }

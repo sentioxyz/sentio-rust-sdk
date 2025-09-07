@@ -7,6 +7,7 @@ pub mod context;
 pub mod event_logger;
 pub mod metrics;
 pub mod event_types;
+pub mod conversions;
 
 pub use processor::{BaseProcessor, TypedProcessor};
 pub use handler_register::{HandlerInfo, HandlerRegister};

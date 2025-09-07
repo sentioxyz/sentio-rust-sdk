@@ -6,6 +6,7 @@ use crate::common::{
     RichValueList, TokenAmount,
 };
 use crate::entity::types::{BigDecimal, BigInt, Bytes, Timestamp};
+use crate::core::conversions::{bigint_to_proto, proto_to_bigint, bigdecimal_to_proto, proto_to_bigdecimal};
 use crate::LogLevel;
 
 /// Attribute value that can be stored in events
@@ -182,18 +183,7 @@ impl From<BigDecimal> for AttributeValue {
     }
 }
 
-// Helpers mirroring entity/serialization BigInt conversions
-fn bigint_to_proto(value: &BigInt) -> ProtoBigInteger {
-    use num_bigint::Sign;
-    let (sign, bytes) = value.to_bytes_be();
-    ProtoBigInteger { negative: sign == Sign::Minus, data: bytes }
-}
-
-fn proto_to_bigint(proto: &ProtoBigInteger) -> BigInt {
-    use num_bigint::Sign;
-    let sign = if proto.negative { Sign::Minus } else { Sign::Plus };
-    BigInt::from_bytes_be(sign, &proto.data)
-}
+// BigInt/BigDecimal conversions are provided by core::conversions
 
 // TryFrom conversions between AttributeValue and RichValue, aligned with entity/serialization.rs
 impl TryFrom<&AttributeValue> for RichValue {
@@ -215,10 +205,7 @@ impl TryFrom<&AttributeValue> for RichValue {
             }
             AttributeValue::Bytes(bytes) => RichValue { value: Some(rich_value::Value::BytesValue(bytes.to_vec())) },
             AttributeValue::BigDecimal(bd) => {
-                // Convert BigDecimal to proto BigDecimal via (mantissa, scale)
-                let (mantissa_bigint, scale) = bd.as_bigint_and_exponent();
-                let proto_mantissa = bigint_to_proto(&mantissa_bigint);
-                let proto = ProtoBigDecimal { value: Some(proto_mantissa), exp: scale as i32 };
+                let proto = bigdecimal_to_proto(bd);
                 RichValue { value: Some(rich_value::Value::BigdecimalValue(proto)) }
             }
             AttributeValue::Token(t) => RichValue { value: Some(rich_value::Value::TokenValue(t.clone())) },
@@ -268,15 +255,7 @@ impl TryFrom<&RichValue> for AttributeValue {
             Some(rich_value::Value::BytesValue(bytes)) => Ok(AttributeValue::Bytes(Bytes::from(bytes.clone()))),
             Some(rich_value::Value::TokenValue(tok)) => Ok(AttributeValue::Token(tok.clone())),
             Some(rich_value::Value::BigdecimalValue(proto_bd)) => {
-                // Convert proto BigDecimal to BigDecimal
-                let mantissa = proto_bd
-                    .value
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Missing mantissa in BigDecimal"))?;
-                let mantissa_bigint = proto_to_bigint(mantissa);
-                let exponent = proto_bd.exp as i64;
-                let scale = -exponent;
-                Ok(AttributeValue::BigDecimal(BigDecimal::new(mantissa_bigint, scale)))
+                Ok(AttributeValue::BigDecimal(proto_to_bigdecimal(proto_bd)?))
             }
             Some(rich_value::Value::NullValue(_)) | None => Err(anyhow::anyhow!("Null value unsupported for AttributeValue")),
         }

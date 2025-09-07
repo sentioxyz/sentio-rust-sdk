@@ -1,5 +1,5 @@
 use sentio_sdk::core::Context;
-use sentio_sdk::entity::{Store, StoreContext};
+use sentio_sdk::entity::Store;
 use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::eth::eth_processor::*;
 use sentio_sdk::eth::{EthEventHandler, EventMarker};
@@ -13,21 +13,18 @@ pub struct MyEthProcessor {
     address: String,
     chain_id: String,
     name: String,
-    store_context: Option<StoreContext>,
-}
+ }
 
 impl MyEthProcessor {
     pub fn new() -> Self {
         // Initialize with entity store for demonstration
         let store = Store::default();
-        let store_context = StoreContext::new(store);
-
+ 
         Self {
             address: "0x1234567890123456789012345678901234567890".to_string(),
             chain_id: "1".to_string(),
             name: "Sentio ETH + Entity Framework Demo".to_string(),
-            store_context: Some(store_context),
-        }
+         }
     }
 }
 

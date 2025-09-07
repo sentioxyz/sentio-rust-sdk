@@ -1,4 +1,4 @@
-use crate::{processor::TimeseriesResult, ProcessStreamResponseV2, Store};
+use crate::{processor::TimeseriesResult, ProcessStreamResponseV3, Store};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -145,7 +145,7 @@ impl Default for BaseContext {
 #[derive(Clone)]
 pub struct RuntimeContext {
     /// Channel sender for emitting event logs to the inbound stream
-    pub tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV2, Status>>,
+    pub tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV3, Status>>,
     /// Process ID for this runtime context
     pub process_id: i32,
     /// Metadata for this runtime context (Arc for lightweight cloning)
@@ -157,7 +157,7 @@ pub struct RuntimeContext {
 impl RuntimeContext {
     /// Create a new RuntimeContext with the given event logger sender, process ID, and metadata
     pub fn new(
-        tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV2, Status>>,
+        tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV3, Status>>,
         process_id: i32,
         metadata: MetaData,
     ) -> Self {
@@ -171,7 +171,7 @@ impl RuntimeContext {
 
     /// Create a new RuntimeContext with empty metadata
     pub fn new_with_empty_metadata(
-        tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV2, Status>>,
+        tx: tokio::sync::mpsc::Sender<Result<ProcessStreamResponseV3, Status>>,
         process_id: i32,
         remote_backend: Arc<Backend>
     ) -> Self {
@@ -233,10 +233,10 @@ impl RuntimeContext {
             data: vec![timeseries_result],
         };
 
-        // Create ProcessStreamResponseV2 with TsRequest
-        let response = ProcessStreamResponseV2 {
+        // Create ProcessStreamResponseV3 with TsRequest
+        let response = ProcessStreamResponseV3 {
             process_id: self.process_id,
-            value: Some(crate::processor::process_stream_response_v2::Value::TsRequest(ts_request)),
+            value: Some(crate::processor::process_stream_response_v3::Value::TsRequest(ts_request)),
         };
 
         // Send through the channel
@@ -250,9 +250,9 @@ impl RuntimeContext {
     }
 
     pub async fn send_db_request(&self,db_request: crate::processor::DbRequest) -> Result<()> {
-        let response = ProcessStreamResponseV2 {
+        let response = ProcessStreamResponseV3 {
             process_id: self.process_id,
-            value: Some(crate::processor::process_stream_response_v2::Value::DbRequest(db_request)),
+            value: Some(crate::processor::process_stream_response_v3::Value::DbRequest(db_request)),
         };
 
         self.tx

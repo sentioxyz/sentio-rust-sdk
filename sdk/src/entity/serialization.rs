@@ -9,6 +9,7 @@ use crate::common::{
     RichValue, RichValueList,
 };
 use crate::entity::types::{BigDecimal, BigInt, Bytes, Timestamp, ID};
+use crate::core::conversions::{bigint_to_proto, proto_to_bigint, bigdecimal_to_proto, proto_to_bigdecimal};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Serialize};
@@ -96,62 +97,7 @@ pub fn rich_struct_to_fields(rich_struct: &RichStruct) -> Vec<(String, &RichValu
         .collect()
 }
 
-// Helper functions for BigInt/BigDecimal protobuf conversions
-
-/// Convert BigInt to protobuf BigInteger
-fn bigint_to_proto_biginteger(value: &BigInt) -> Result<ProtoBigInteger> {
-    use num_bigint::Sign;
-
-    let (sign, bytes) = value.to_bytes_be();
-    Ok(ProtoBigInteger {
-        negative: sign == Sign::Minus,
-        data: bytes,
-    })
-}
-
-/// Convert protobuf BigInteger to BigInt
-fn proto_biginteger_to_bigint(proto: &ProtoBigInteger) -> Result<BigInt> {
-    use num_bigint::Sign;
-
-    let sign = if proto.negative {
-        Sign::Minus
-    } else {
-        Sign::Plus
-    };
-    Ok(BigInt::from_bytes_be(sign, &proto.data))
-}
-
-/// Convert BigDecimal (bigdecimal::BigDecimal) to protobuf BigDecimal
-fn decimal_to_proto_bigdecimal(value: &BigDecimal) -> Result<ProtoBigDecimal> {
-    
-    
-    // Convert BigDecimal to (mantissa, scale) representation
-    let (mantissa_bigint, scale) = value.as_bigint_and_exponent();
-    
-    // Convert mantissa to protobuf BigInteger
-    let proto_mantissa = bigint_to_proto_biginteger(&mantissa_bigint)?;
-
-    Ok(ProtoBigDecimal {
-        value: Some(proto_mantissa),
-        exp: scale as i32, // bigdecimal uses exponent directly
-    })
-}
-
-/// Convert protobuf BigDecimal to BigDecimal (bigdecimal::BigDecimal)
-fn proto_bigdecimal_to_decimal(proto: &ProtoBigDecimal) -> Result<BigDecimal> {
-    let proto_mantissa = proto
-        .value
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Missing mantissa in BigDecimal"))?;
-
-    let mantissa_bigint = proto_biginteger_to_bigint(proto_mantissa)?;
-    let exponent = proto.exp as i64;
-
-    // In BigDecimal, negative exponent means decimal places (scale)
-    // For example: 123 with exponent -3 = 0.123 (scale = 3)
-    let scale = -exponent;
-    Ok(BigDecimal::new(mantissa_bigint, scale))
-}
+// Protobuf conversions centralized in core::conversions
 
 // GraphQL scalar type implementations
 
@@ -284,7 +230,7 @@ impl FromRichValue for ID {
 impl ToRichValue for BigDecimal {
     fn to_rich_value(&self) -> Result<RichValue> {
         // Convert BigDecimal to protobuf BigDecimal format
-        let proto_bigdecimal = decimal_to_proto_bigdecimal(self)?;
+        let proto_bigdecimal = bigdecimal_to_proto(self);
         Ok(RichValue {
             value: Some(rich_value::Value::BigdecimalValue(proto_bigdecimal)),
         })
@@ -295,7 +241,7 @@ impl FromRichValue for BigDecimal {
     fn from_rich_value(value: &RichValue) -> Result<Self> {
         match &value.value {
             Some(rich_value::Value::BigdecimalValue(proto_bigdecimal)) => {
-                proto_bigdecimal_to_decimal(proto_bigdecimal)
+                proto_to_bigdecimal(proto_bigdecimal)
             }
             Some(rich_value::Value::StringValue(s)) => s
                 .parse::<BigDecimal>()
@@ -313,7 +259,7 @@ impl FromRichValue for BigDecimal {
 impl ToRichValue for BigInt {
     fn to_rich_value(&self) -> Result<RichValue> {
         // Convert BigInt to protobuf BigInteger format
-        let proto_biginteger = bigint_to_proto_biginteger(self)?;
+        let proto_biginteger = bigint_to_proto(self);
         Ok(RichValue {
             value: Some(rich_value::Value::BigintValue(proto_biginteger)),
         })
@@ -324,7 +270,7 @@ impl FromRichValue for BigInt {
     fn from_rich_value(value: &RichValue) -> Result<Self> {
         match &value.value {
             Some(rich_value::Value::BigintValue(proto_biginteger)) => {
-                proto_biginteger_to_bigint(proto_biginteger)
+                Ok(proto_to_bigint(proto_biginteger))
             }
             Some(rich_value::Value::StringValue(s)) => s
                 .parse::<BigInt>()

@@ -8,8 +8,8 @@ mod tests {
         let server = Server::new();
         
         // Test concurrent access to plugin manager (now lock-free with DashMap)
-        let pm1 = server.plugin_manager.clone();
-        let pm2 = server.plugin_manager.clone();
+        let pm1 = server.service.plugin_manager.clone();
+        let pm2 = server.service.plugin_manager.clone();
         
         let handle1 = tokio::spawn(async move {
             // Test concurrent read access - should work without blocking
@@ -35,7 +35,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_plugin_operations() {
         let server = Server::new();
-        let pm = server.plugin_manager.clone();
+        let pm = server.service.plugin_manager.clone();
         
         // Test that concurrent operations work correctly with DashMap
         let start = std::time::Instant::now();

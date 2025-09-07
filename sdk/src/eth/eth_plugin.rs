@@ -8,7 +8,7 @@ use crate::eth::ParsedEthData;
 use crate::log_filter::AddressOrType;
 use crate::processor::HandlerType;
 use crate::{
-    ConfigureHandlersRequest, ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter,
+    ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter,
     LogHandlerConfig, Topic,
 };
 use anyhow;
@@ -49,30 +49,11 @@ impl Plugin for EthPlugin {
         "eth-plugin"
     }
 
-    fn configure(
-        &mut self,
-        request: &ConfigureHandlersRequest,
-        config: &mut ConfigureHandlersResponse,
-    ) {
-        debug!(
-            "Configuring EthPlugin handlers for chain_id: {:?}",
-            request.chain_id
-        );
-        let chain_id = if request.chain_id.is_empty() {
-            None
-        } else {
-            Some(request.chain_id.clone())
-        };
+    fn configure(&mut self, config: &mut ConfigureHandlersResponse) {
+        debug!("Configuring EthPlugin handlers for all chains");
 
         for (processor_idx, processor) in self.processors.iter().enumerate() {
             let processor_chain_id = processor.chain_id();
-
-            // Filter by chain_id if provided, otherwise process all
-            if let Some(filter_chain_id) = chain_id.as_ref() {
-                if processor_chain_id != filter_chain_id {
-                    continue;
-                }
-            }
 
             let mut contract_config = ContractConfig::default();
             contract_config.processor_type = crate::core::USER_PROCESSOR.to_owned();
@@ -365,7 +346,7 @@ impl PluginRegister<EthProcessorImpl> for EthPlugin {
 mod tests {
     use super::*;
     use crate::eth::eth_processor::EthProcessor;
-    use crate::{ConfigureHandlersRequest, ConfigureHandlersResponse};
+    use crate::ConfigureHandlersResponse;
     use crate::eth::EthEventHandler;
 
     #[derive(Clone)]
@@ -434,37 +415,16 @@ mod tests {
         // Register the processor
         plugin.register_processor(processor_impl);
 
-        // Test configure method with no chain filter
-        let request = ConfigureHandlersRequest {
-            chain_id: "".to_string(),
-            template_instances: vec![],
-        };
-        plugin.configure(&request, &mut config);
+        // Test configure method registers handlers
+        plugin.configure(&mut config);
 
         // Should have registered handlers for each handler type
         let registered_count = plugin.handler_register.len();
         assert!(registered_count > 0, "Should have registered some handlers");
 
-        // Clear and test configure method with chain filter
-        plugin.handler_register.clear();
-        let request_with_chain = ConfigureHandlersRequest {
-            chain_id: "ethereum".to_string(),
-            template_instances: vec![],
-        };
-        plugin.configure(&request_with_chain, &mut config);
-
-        // Should have same number of handlers when filtering by correct chain
-        assert_eq!(plugin.handler_register.len(), registered_count);
-
-        // Clear and test configure method with non-matching chain filter
-        plugin.handler_register.clear();
-        let request_non_matching = ConfigureHandlersRequest {
-            chain_id: "999".to_string(),
-            template_instances: vec![],
-        };
-        plugin.configure(&request_non_matching, &mut config);
-
-        // Should have no handlers when filtering by non-matching chain
-        assert_eq!(plugin.handler_register.len(), 0);
+        // We no longer filter by chain; ensure configure is idempotent
+        let prev = plugin.handler_register.len();
+        plugin.configure(&mut config);
+        assert!(plugin.handler_register.len() >= prev);
     }
 }

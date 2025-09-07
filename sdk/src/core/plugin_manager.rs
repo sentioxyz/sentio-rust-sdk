@@ -1,6 +1,6 @@
 use crate::core::plugin::FullPlugin;
 use crate::core::{RuntimeContext, RUNTIME_CONTEXT};
-use crate::{ConfigureHandlersRequest, DataBinding, ProcessResult};
+use crate::{DataBinding, ProcessResult};
 use dashmap::DashMap;
 
 pub struct PluginManager {
@@ -105,7 +105,6 @@ impl PluginManager {
     /// Configure all plugins for a specific chain_id
     pub fn configure_all_plugins(
         &self,
-        request: ConfigureHandlersRequest,
         response: &mut crate::processor::ConfigureHandlersResponse,
     ) {
         // First collect the plugin names to avoid borrow checker issues
@@ -114,7 +113,7 @@ impl PluginManager {
         for plugin_name in plugin_names {
             if let Some(mut plugin_entry) = self.plugins.get_mut(&plugin_name) {
                 tracing::debug!("Configuring plugin: {}", plugin_name);
-                plugin_entry.value_mut().configure(&request, response);
+                plugin_entry.value_mut().configure(response);
                 tracing::debug!(
                     "Plugin '{}' contributed {} contract configs",
                     plugin_name,

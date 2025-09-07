@@ -73,12 +73,12 @@ impl TestProcessorServer {
     /// Collect results from a single channel response
     fn collect_results_from_channel_response(
         &self,
-        response: crate::ProcessStreamResponseV2,
+        response: crate::ProcessStreamResponseV3,
         test_result: &mut TestResult
     ) {
         if let Some(value) = response.value {
             match value {
-                crate::processor::process_stream_response_v2::Value::TsRequest(ts_request) => {
+                crate::processor::process_stream_response_v3::Value::TsRequest(ts_request) => {
                     // Process timeseries data (counters and gauges)
                     for ts_data in ts_request.data {
                         self.process_timeseries_result(ts_data,  test_result);
@@ -250,13 +250,8 @@ impl TestProcessorServer {
             account_configs: vec![],
         };
         
-        let request = crate::processor::ConfigureHandlersRequest {
-            chain_id: "1".to_string(), // Default to Ethereum for testing
-            template_instances: vec![],
-        };
-        
         // Get configuration from plugin manager
-        self.plugin_manager.configure_all_plugins(request, &mut config_response);
+        self.plugin_manager.configure_all_plugins(&mut config_response);
    
        config_response
     }

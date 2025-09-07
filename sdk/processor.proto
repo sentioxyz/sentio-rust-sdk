@@ -27,16 +27,16 @@ service Processor {
 }
 
 service ProcessorV3 {
-  // Initially call once to confirm which chains are available
-  rpc Init(google.protobuf.Empty) returns (InitResponse);
+  // Start the processor, need to be called before any other RPC calls
+  rpc Start(StartRequest) returns (google.protobuf.Empty);
 
-  // It will be called multiple times to tell the specified chain which templates are there and return
-  // the handler configuration of this chain.
-  // There is a special requirement that different chains must have different handler id sequences,
-  // otherwise templates cannot be added midway. Whether it is a new template can also be determined by the driver.
-  rpc ConfigureHandlers(ConfigureHandlersRequest) returns (ConfigureHandlersResponse);
+  // Get configs of processor
+  rpc GetConfig(ProcessConfigRequest) returns (ProcessConfigResponse);
 
-  rpc ProcessBindingsStream(stream ProcessStreamRequest) returns (stream ProcessStreamResponseV2);
+  // It will be called multiple times to tell the specified chain which templates are there
+  rpc UpdateTemplates(UpdateTemplatesRequest) returns (google.protobuf.Empty);
+
+  rpc ProcessBindingsStream(stream ProcessStreamRequest) returns (stream ProcessStreamResponseV3);
 }
 
 message ProjectConfig {
@@ -45,10 +45,17 @@ message ProjectConfig {
 }
 
 message ExecutionConfig {
+  enum HandlerOrderInsideTransaction {
+    // By default, the handler is executed purely by log index within transaction
+    BY_LOG_INDEX = 0;
+    // Optional, the handler is executed by processor first, for each processor, the handler is executed by log index
+    BY_PROCESSOR_AND_LOG_INDEX = 1;
+  }
   // By default, the processor will run handlers  in parallel, but in some cases, we want to process the data
   // sequentially, e.g. read the data from the database, then process the data, then write the data back to the database
   bool sequential = 1;
   bool forceExactBlockTime = 2;
+  HandlerOrderInsideTransaction handler_order_inside_transaction = 7;
   int32 processBindingTimeout = 3;
   // By default, the processor will try to locate the start block of the contract even user provided one,
   // but in case that nodes are pruned so it can't be correctly located, this flag will force the processor to start
@@ -316,7 +323,7 @@ message InitResponse {
   repeated EventLogConfig event_log_configs = 7;
 }
 
-message ConfigureHandlersRequest {
+message UpdateTemplatesRequest {
   string chain_id = 1;
   repeated TemplateInstance template_instances = 2;
 }
@@ -603,7 +610,7 @@ message ProcessStreamResponse {
   }
 }
 
-message ProcessStreamResponseV2 {
+message ProcessStreamResponseV3 {
   int32 process_id = 1; // used to identify the processor run
   oneof value {
     ProcessStreamResponse.Partitions partitions = 2; // will be followed by a start request
@@ -612,8 +619,6 @@ message ProcessStreamResponseV2 {
     TPLRequest tpl_request = 5; // no response
     ProcessResult result = 6;  // finish the binding data, no response
   }
-
-
 }
 
 message PreprocessStreamRequest {

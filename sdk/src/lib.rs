@@ -1,4 +1,5 @@
 pub mod server;
+pub mod service;
 pub mod eth;
 pub mod core;
 pub mod testing;
@@ -21,6 +22,7 @@ pub mod processor {
 pub use processor::*;
 pub use common::*;
 pub use server::{Server, ServerArgs};
+pub use service::ProcessorService;
 pub use core::{BaseProcessor, Plugin};
 pub use eth::EthPlugin;
 pub use processor::HandlerType;

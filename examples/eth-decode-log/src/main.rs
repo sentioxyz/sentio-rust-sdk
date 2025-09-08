@@ -1,20 +1,13 @@
-use anyhow::{anyhow, Result};
-use ethers::abi::{Event, ParamType, RawLog, Token};
 use sentio_sdk::eth::eth_processor::*;
-use sentio_sdk::eth::{EthEventHandler, EventMarker};
-use sentio_sdk::eth::context::EthContext;
-use sentio_sdk::core::Context;
-use sentio_sdk::{async_trait, Server};
-use serde::Serialize;
-use std::env;
-use tracing::{debug, info, warn};
+use sentio_sdk::{Server};
+use tracing::info;
 
 mod abi_client;
 mod processor;
 mod generated;
 use processor::*;
 
-fn main() -> Result<()> {
+fn main()  {
     tracing_subscriber::fmt::init();
 
     let server = Server::new();
@@ -26,6 +19,4 @@ fn main() -> Result<()> {
 
     info!("Starting Ethereum log decoder processor...");
     server.start();
-
-    Ok(())
 }

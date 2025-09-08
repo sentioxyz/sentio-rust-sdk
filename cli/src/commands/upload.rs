@@ -167,18 +167,24 @@ impl UploadCommand {
         // Get host
         let host = get_finalized_host(self.host.as_deref());
 
-        // Get project name - for now use a default or from args
+        // Get project name with priority: --name > --owner/default > cargo package name > directory name
         let project_name = if let Some(name) = &self.name {
             name.clone()
         } else if let Some(owner) = &self.owner {
             format!("{}/{}", owner, "default-project")
         } else {
-            // Try to get from project path directory name
-            Path::new(&self.path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("default-project")
-                .to_string()
+            // Try to get package name from Cargo.toml first
+            match self.get_package_name_from_cargo_toml().await {
+                Ok(package_name) => package_name,
+                Err(_) => {
+                    // Fall back to directory name if Cargo.toml parsing fails
+                    Path::new(&self.path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("default-project")
+                        .to_string()
+                }
+            }
         };
 
         Ok(ProjectConfig {
@@ -189,6 +195,23 @@ impl UploadCommand {
             build: !self.nobuild,
             silent_overwrite: self.silent_overwrite,
         })
+    }
+
+    async fn get_package_name_from_cargo_toml(&self) -> Result<String> {
+        let cargo_toml_path = Path::new(&self.path).join("Cargo.toml");
+        let cargo_toml_content = tokio::fs::read_to_string(&cargo_toml_path)
+            .await
+            .context("Failed to read Cargo.toml")?;
+        let cargo_toml: toml::Value =
+            toml::from_str(&cargo_toml_content).context("Failed to parse Cargo.toml")?;
+        
+        if let Some(package) = cargo_toml.get("package") {
+            if let Some(name) = package.get("name").and_then(|n| n.as_str()) {
+                return Ok(name.to_string());
+            }
+        }
+        
+        Err(anyhow!("No package name found in Cargo.toml"))
     }
 
     async fn setup_authentication(
@@ -302,10 +325,15 @@ impl UploadCommand {
         let sha256_hash = format!("{:x}", hasher.finalize());
 
         // Get user info to construct full project path
+        println!("Debug: config.project = '{}'", config.project);
         let full_project_name = if !config.project.contains('/') {
             let user_info = self.get_user_info(config, auth_headers).await?;
-            format!("{}/{}", user_info.username, config.project)
+            println!("Debug: user_info.username = '{}'", user_info.username);
+            let full_name = format!("{}/{}", user_info.username, config.project);
+            println!("Debug: full_project_name = '{}'", full_name);
+            full_name
         } else {
+            println!("Debug: using config.project as-is = '{}'", config.project);
             config.project.clone()
         };
 
@@ -488,7 +516,18 @@ impl UploadCommand {
             .send()
             .await?;
 
-        if response.status() == 404 {
+        // Handle 404 or 500 with "record not found" - both indicate project doesn't exist
+        let response_status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let should_create_project = if response_status == 404 {
+            true
+        } else if response_status == 500 {
+            body.to_lowercase().contains("record not found")
+        } else {
+            false
+        };
+
+        if should_create_project {
             // Project not found, try to create it
             self.create_project_if_needed(config, auth_headers, project)
                 .await?;
@@ -511,17 +550,16 @@ impl UploadCommand {
             return Ok(init_response);
         }
 
-        if !response.status().is_success() {
-            let status_text = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
+        if !response_status.is_success() {
+            let status_text = response_status;
+             return Err(anyhow!(
                 "Failed to initialize upload: {}, body: {}",
                 status_text,
                 body
             ));
         }
 
-        let init_response: InitUploadResponse = response.json().await?;
+        let init_response: InitUploadResponse = serde_json::from_str(&body)?;
         Ok(init_response)
     }
 
@@ -535,12 +573,12 @@ impl UploadCommand {
             true
         } else {
             Confirm::new()
-                .with_prompt("Project not found, do you want to create it and continue the uploading process?")
+                .with_prompt(&format!("Project not found for '{}', do you want to create it?", project))
                 .interact()?
         };
 
         if !create_project {
-            return Err(anyhow!("Upload cancelled - project not found"));
+            return Err(anyhow!("Upload cancelled - project '{}' not found", project));
         }
 
         let client = reqwest::Client::new();

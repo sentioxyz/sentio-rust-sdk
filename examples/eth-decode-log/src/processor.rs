@@ -9,7 +9,6 @@ use sentio_sdk::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
 use sentio_sdk::eth::{EthEventHandler, EventMarker};
 use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::entity::{ID, Timestamp};
-use sentio_sdk::EntityStore;
 use crate::abi_client::AbiClient;
 use crate::generated::entities::DecodedLogBuilder;
 

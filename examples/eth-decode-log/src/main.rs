@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 
 mod abi_client;
 mod processor;
-
+mod generated;
 use processor::*;
 
 fn main() -> Result<()> {

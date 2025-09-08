@@ -11,9 +11,7 @@ use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::entity::{ID, Timestamp};
 use sentio_sdk::EntityStore;
 use crate::abi_client::AbiClient;
-use eth_decode_log::generated::entities::{DecodedLog, DecodedLogBuilder};
-
-// Remove the manual struct - we'll use the generated DecodedLog entity instead
+use crate::generated::entities::DecodedLogBuilder;
 
 #[derive(Debug, Clone, Serialize)]
 struct ErrorLogData {

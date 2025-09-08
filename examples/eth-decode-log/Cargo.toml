@@ -6,14 +6,9 @@ authors.workspace = true
 license.workspace = true
 description = "Ethereum log decoding processor using Sentio SDK"
 
-[lib]
-name = "eth_decode_log"
-path = "src/lib.rs"
-
 [[bin]]
 name = "eth-decode-log"
 path = "src/main.rs"
-target = "x86_64-unknown-linux-musl"
 
 [dependencies]
 sentio-sdk = { path = "../../sdk" }

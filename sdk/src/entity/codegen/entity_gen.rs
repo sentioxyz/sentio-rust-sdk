@@ -262,18 +262,11 @@ impl EntityCodeGenerator {
             if let Some(derived_directive) = field.get_directive("derivedFrom") {
                 if let Some(derived_field) = derived_directive.get_string_arg("field") {
                     if is_list {
-                        // Many relations derived field (case 2)
-                        getter.line("let store = Store::from_current_context().await?;")
-                              .line(&format!("let mut options = ListOptions::<{}>::new();", target_type))
-                              .line(&format!("options.filters.push(Filter::eq(\"{}\", self.id.clone()));", derived_field))
-                              .line(&format!("Ok(store.list(options).await?)"));
+                        // Many relations derived field (case 2) - using Entity Query API
+                        getter.line(&format!("Ok({}::find().where_eq(\"{}\", self.id.clone()).list().await?)", target_type, derived_field));
                     } else {
-                        // Single relation derived field (case 4)
-                        getter.line("let store = Store::from_current_context().await?;")
-                              .line(&format!("let mut options = ListOptions::<{}>::new();", target_type))
-                              .line(&format!("options.filters.push(Filter::eq(\"{}\", self.id.clone()));", derived_field))
-                              .line(&format!("let results = store.list(options).await?;"))
-                              .line("Ok(results.into_iter().next())");
+                        // Single relation derived field (case 4) - using Entity Query API
+                        getter.line(&format!("Ok({}::find().where_eq(\"{}\", self.id.clone()).first().await?)", target_type, derived_field));
                     }
                 } else {
                     getter.line("// TODO: derivedFrom field argument missing")
@@ -758,10 +751,7 @@ mod tests {
         // Test Case 2: Many relations derived field
         assert!(code.contains("pub async fn followers"));
         assert!(code.contains("EntityResult<Vec<User>>"));
-        assert!(code.contains("Store::from_current_context().await?"));
-        assert!(code.contains("ListOptions::<User>::new()"));
-        assert!(code.contains("Filter::eq(\"following\", self.id.clone())"));
-        assert!(code.contains("Ok(store.list(options).await?)"));
+        assert!(code.contains("User::find().where_eq(\"following\", self.id.clone()).list().await"));
 
         // Test Case 3: Single relation (optional) stored as ID
         assert!(code.contains("owner_id: Option<ID>"));
@@ -772,10 +762,7 @@ mod tests {
         // Test Case 4: Single relation derived
         assert!(code.contains("pub async fn manager"));
         assert!(code.contains("EntityResult<Option<User>>"));
-        assert!(code.contains("Store::from_current_context().await?"));
-        assert!(code.contains("ListOptions::<User>::new()"));
-        assert!(code.contains("Filter::eq(\"managedAccount\", self.id.clone())"));
-        assert!(code.contains("results.into_iter().next()"));
+        assert!(code.contains("User::find().where_eq(\"managedAccount\", self.id.clone()).first().await"));
 
         // Test imports (they might be in different format)
         assert!(code.contains("User") && (code.contains("use") || code.contains("import")));

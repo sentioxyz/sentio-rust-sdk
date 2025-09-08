@@ -15,20 +15,20 @@ use crate::entities::TokenContract;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 pub struct Transfer {
     timestamp: Timestamp,
-    id: ID,
-    contract: String,
-    #[serde(rename = "logIndex")]
-    log_index: i32,
-    from: String,
     #[serde(rename = "tokenContract")]
     #[builder(default)]
     token_contract_id: Option<ID>,
-    to: String,
     #[serde(rename = "blockNumber")]
     block_number: BigInt,
+    from: String,
+    id: ID,
     value: BigDecimal,
+    #[serde(rename = "logIndex")]
+    log_index: i32,
     #[serde(rename = "transactionHash")]
     transaction_hash: String,
+    to: String,
+    contract: String,
 }
 
 

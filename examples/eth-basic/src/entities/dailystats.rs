@@ -13,16 +13,16 @@ use serde::{Serialize, Deserialize};
 /// Timeseries entity - optimized for time-ordered data
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 pub struct DailyStats {
-    #[serde(rename = "transferCount")]
-    transfer_count: BigInt,
     #[serde(rename = "totalVolume")]
     total_volume: BigDecimal,
-    id: Int8,
+    timestamp: Timestamp,
+    #[serde(rename = "transferCount")]
+    transfer_count: BigInt,
     #[serde(rename = "contractsActive")]
     contracts_active: BigInt,
     #[serde(rename = "uniqueUsers")]
     unique_users: BigInt,
-    timestamp: Timestamp,
+    id: Int8,
 }
 
 

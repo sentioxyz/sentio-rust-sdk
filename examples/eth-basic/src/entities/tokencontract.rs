@@ -14,25 +14,25 @@ use crate::entities::Transfer;
 /// Relation field
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 pub struct TokenContract {
+    #[serde(rename = "holderCount")]
+    holder_count: BigInt,
     #[builder(default)]
-    decimals: i32,
+    symbol: String,
+    #[serde(rename = "transferCount")]
+    transfer_count: BigInt,
+    #[serde(rename = "relatedTransfers")]
+    related_transfers_ids: Vec<ID>,
     id: ID,
-    #[builder(default)]
-    name: String,
-    address: String,
     #[serde(rename = "totalSupply")]
     #[builder(default)]
     total_supply: BigDecimal,
-    #[serde(rename = "transferCount")]
-    transfer_count: BigInt,
-    #[serde(rename = "holderCount")]
-    holder_count: BigInt,
+    #[builder(default)]
+    name: String,
     #[serde(rename = "createdAt")]
     created_at: Timestamp,
+    address: String,
     #[builder(default)]
-    symbol: String,
-    #[serde(rename = "relatedTransfers")]
-    related_transfers_ids: Vec<ID>,
+    decimals: i32,
 }
 
 

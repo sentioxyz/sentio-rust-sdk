@@ -13,18 +13,18 @@ use serde::{Serialize, Deserialize};
 /// Entity: Approval
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 pub struct Approval {
-    #[serde(rename = "blockNumber")]
-    block_number: BigInt,
-    #[serde(rename = "logIndex")]
-    log_index: i32,
-    timestamp: Timestamp,
-    value: BigDecimal,
-    spender: String,
-    id: ID,
     owner: String,
+    value: BigDecimal,
+    timestamp: Timestamp,
     #[serde(rename = "transactionHash")]
     transaction_hash: String,
+    #[serde(rename = "logIndex")]
+    log_index: i32,
+    spender: String,
+    #[serde(rename = "blockNumber")]
+    block_number: BigInt,
     contract: String,
+    id: ID,
 }
 
 

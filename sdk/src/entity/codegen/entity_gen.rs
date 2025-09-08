@@ -48,7 +48,7 @@ impl EntityCodeGenerator {
     }
 
     /// Add necessary imports to the scope
-    fn add_imports(&self, scope: &mut Scope, entity: &EntityType, schema: &EntitySchema) {
+    fn add_imports(&self, scope: &mut Scope, entity: &EntityType, _schema: &EntitySchema) {
         scope.import("sentio_sdk::entity", "*");
         scope.import("derive_builder", "Builder");
         scope.import("serde", "{Serialize, Deserialize}");
@@ -105,27 +105,66 @@ impl EntityCodeGenerator {
                 continue; // Skip derived fields - they'll be methods only
             }
 
-            // Determine field type - handle relations properly
-            let field_type = if field.is_relation() {
-                // For relation fields that aren't derived, we need to handle optional vs required
-                if field.field_type.is_optional() {
-                    self.field_type_to_rust_with_optional(&field.field_type, schema)?
-                } else {
-                    self.field_type_to_rust(&field.field_type, schema, field_name == "id")?
+            // Special handling for direct relation fields
+            if field.is_relation() {
+                if let Some(_target_type) = field.base_type().get_object_name() {
+                    let base_name = self.to_snake_case(field_name);
+                    let is_list = field.field_type.is_list();
+                    let is_optional = field.field_type.is_optional();
+
+                    // Generate field name and type based on relation cardinality
+                    let (field_name_final, ty_string) = if is_list {
+                        (format!("{}_ids", base_name), "Vec<ID>".to_string())
+                    } else if is_optional {
+                        (format!("{}_id", base_name), "Option<ID>".to_string())
+                    } else {
+                        (format!("{}_id", base_name), "ID".to_string())
+                    };
+
+                    let mut annotations = vec![format!("#[serde(rename = \"{}\")]", field_name)];
+                    if is_optional {
+                        annotations.push("#[builder(default)]".to_string());
+                    }
+
+                    let f = Field {
+                        name: field_name_final.clone(),
+                        ty: Type::new(&ty_string),
+                        documentation: vec![],
+                        annotation: annotations,
+                    };
+
+                    let struct_field = entity_struct.push_field(f);
+                    struct_field.vis("pub");
+
+                    // Add field documentation
+                    if let Some(ref description) = field.description {
+                        struct_field.doc(description);
+                    }
+
+                    if field.is_indexed() {
+                        struct_field.doc("Indexed field");
+                    }
+
+                    struct_field.doc("Relation field");
+                    continue;
                 }
-            } else {
-                self.field_type_to_rust(&field.field_type, schema, field_name == "id")?
-            };
-            
+            }
+
+            // Non-relation fields fall back to regular processing
+            let field_type = self.field_type_to_rust(&field.field_type, schema, field_name == "id")?;
+
             let rust_field_name = self.to_snake_case(field_name);
-            
-            // Only add serde rename annotation if the field name actually changed
-            let annotations = if rust_field_name != *field_name {
-                vec![format!("#[serde(rename = \"{}\")]", field_name)]
-            } else {
-                vec![]
-            };
-            
+            let is_optional = field.field_type.is_optional();
+
+            // Build annotations vector with serde rename (if needed) and builder default for optional fields
+            let mut annotations = Vec::new();
+            if rust_field_name != *field_name {
+                annotations.push(format!("#[serde(rename = \"{}\")]", field_name));
+            }
+            if is_optional {
+                annotations.push("#[builder(default)]".to_string());
+            }
+
             let f = Field {
                 name: rust_field_name.clone(),
                 ty: Type::new(&field_type),
@@ -143,10 +182,6 @@ impl EntityCodeGenerator {
 
             if field.is_indexed() {
                 struct_field.doc("Indexed field");
-            }
-
-            if field.is_relation() && !field.has_directive("derivedFrom") {
-                struct_field.doc("Relation field");
             }
         }
 
@@ -184,10 +219,10 @@ impl EntityCodeGenerator {
             self.add_derived_field_getter(&mut helper_impl, field_name, field, schema)?;
         }
 
-        // Relation setters for object fields
+        // Relation getters for direct relations
         for (field_name, field) in entity.get_relation_fields() {
             if !field.has_directive("derivedFrom") {
-                self.add_relation_setter(&mut helper_impl, field_name, field)?;
+                self.add_direct_relation_getter(&mut helper_impl, field_name, field)?;
             }
         }
 
@@ -215,7 +250,8 @@ impl EntityCodeGenerator {
                 format!("EntityResult<Option<{}>>", target_type)
             };
 
-            let mut getter = Function::new(field_name);
+            let rust_field_name = self.to_snake_case(field_name);
+            let mut getter = Function::new(&rust_field_name);
             getter.doc(&format!("Get {} (derived relation)", field_name))
                   .vis("pub")
                   .set_async(true)
@@ -253,8 +289,8 @@ impl EntityCodeGenerator {
         Ok(())
     }
 
-    /// Add relation setter method
-    fn add_relation_setter(
+    /// Add direct relation getter method for non-derived relations
+    fn add_direct_relation_getter(
         &self,
         impl_block: &mut Impl,
         field_name: &str,
@@ -264,61 +300,49 @@ impl EntityCodeGenerator {
             let is_list = field.field_type.is_list();
             let is_optional = field.field_type.is_optional();
             let rust_field_name = self.to_snake_case(field_name);
-            
+
             if is_list {
-                // Many relations field (case 1) - Vec<Entity> field
-                // Add setter for the entire collection
-                let mut setter = Function::new(&format!("set_{}", rust_field_name));
-                setter.doc(&format!("Set {} relation collection", field_name))
-                      .vis("pub")
-                      .arg_mut_self()
-                      .arg(&rust_field_name, &format!("Vec<{}>", target_type))
-                      .line(&format!("self.{} = {};", rust_field_name, rust_field_name));
-                impl_block.push_fn(setter);
+                // Many relations: generate get_many helper
+                let mut getter = Function::new(&rust_field_name);
+                getter
+                    .doc(&format!("Get {} relation", field_name))
+                    .vis("pub")
+                    .set_async(true)
+                    .arg_ref_self()
+                    .ret(&format!("EntityResult<Vec<{}>>", target_type));
 
-                // Add method to add single item to collection
-                let mut add_method = Function::new(&format!("add_{}", rust_field_name.trim_end_matches('s')));
-                add_method.doc(&format!("Add single item to {} collection", field_name))
-                          .vis("pub")
-                          .arg_mut_self()
-                          .arg("item", target_type)
-                          .line(&format!("self.{}.push(item);", rust_field_name));
-                impl_block.push_fn(add_method);
-
-                // Add method to remove item from collection
-                let mut remove_method = Function::new(&format!("remove_{}", rust_field_name.trim_end_matches('s')));
-                remove_method.doc(&format!("Remove item from {} collection by ID", field_name))
-                             .vis("pub")
-                             .arg_mut_self()
-                             .arg("id", "&<Self as Entity>::Id")
-                             .line(&format!("self.{}.retain(|item| item.id() != id);", rust_field_name));
-                impl_block.push_fn(remove_method);
-
+                getter.line(&format!(
+                    "let ids = self.{0}_ids.iter().map(|id| <{1} as Entity>::Id::from_string(&id.to_string())).collect::<Result<Vec<_>, _>>()?;",
+                    rust_field_name, target_type
+                ));
+                getter.line(&format!("Ok({}::get_many(&ids).await?)", target_type));
+                impl_block.push_fn(getter);
             } else {
-                // Single relation field (case 3) - Entity or Option<Entity> field
-                let field_type = if is_optional {
-                    format!("Option<{}>", target_type)
-                } else {
-                    target_type.clone()
-                };
+                // Single relation: generate get helper
+                let mut getter = Function::new(&rust_field_name);
+                getter
+                    .doc(&format!("Get {} relation", field_name))
+                    .vis("pub")
+                    .set_async(true)
+                    .arg_ref_self()
+                    .ret(&format!("EntityResult<Option<{}>>", target_type));
 
-                let mut setter = Function::new(&format!("set_{}", rust_field_name));
-                setter.doc(&format!("Set {} relation", field_name))
-                      .vis("pub")
-                      .arg_mut_self()
-                      .arg(&rust_field_name, &field_type)
-                      .line(&format!("self.{} = {};", rust_field_name, rust_field_name));
-                impl_block.push_fn(setter);
-
-                // For optional single relations, add a clear method
                 if is_optional {
-                    let mut clear_method = Function::new(&format!("clear_{}", rust_field_name));
-                    clear_method.doc(&format!("Clear {} relation", field_name))
-                               .vis("pub")
-                               .arg_mut_self()
-                               .line(&format!("self.{} = None;", rust_field_name));
-                    impl_block.push_fn(clear_method);
+                    getter.line(&format!("if let Some(id) = &self.{0}_id {{", rust_field_name));
+                    getter.line(&format!("    let id = <{} as Entity>::Id::from_string(&id.to_string())?;", target_type));
+                    getter.line(&format!("    Ok({}::get(&id).await?)", target_type));
+                    getter.line("} else {");
+                    getter.line("    Ok(None)");
+                    getter.line("}");
+                } else {
+                    getter.line(&format!(
+                        "let id = <{1} as Entity>::Id::from_string(&self.{0}_id.to_string())?;",
+                        rust_field_name, target_type
+                    ));
+                    getter.line(&format!("Ok({}::get(&id).await?)", target_type));
                 }
+
+                impl_block.push_fn(getter);
             }
         }
         Ok(())
@@ -725,11 +749,11 @@ mod tests {
         let generator = EntityCodeGenerator::new();
         let code = generator.generate_entity(&account_entity, &schema).unwrap();
 
-        // Test Case 1: Many relations field (Vec<Post>)
-        assert!(code.contains("posts: Vec<Post>"));
-        assert!(code.contains("pub fn set_posts"));
-        assert!(code.contains("pub fn add_post"));
-        assert!(code.contains("pub fn remove_post"));
+        // Test Case 1: Many relations field with IDs
+        assert!(code.contains("posts_ids: Vec<ID>"));
+        assert!(code.contains("pub async fn posts"));
+        assert!(code.contains("EntityResult<Vec<Post>>"));
+        assert!(code.contains("get_many(&ids)"));
 
         // Test Case 2: Many relations derived field
         assert!(code.contains("pub async fn followers"));
@@ -739,10 +763,11 @@ mod tests {
         assert!(code.contains("Filter::eq(\"following\", self.id.clone())"));
         assert!(code.contains("Ok(store.list(options).await?)"));
 
-        // Test Case 3: Single relation (optional)
-        assert!(code.contains("owner: Option<User>"));
-        assert!(code.contains("pub fn set_owner"));
-        assert!(code.contains("pub fn clear_owner"));
+        // Test Case 3: Single relation (optional) stored as ID
+        assert!(code.contains("owner_id: Option<ID>"));
+        assert!(code.contains("pub async fn owner"));
+        assert!(code.contains("EntityResult<Option<User>>"));
+        assert!(code.contains("::get(&id)"));
 
         // Test Case 4: Single relation derived
         assert!(code.contains("pub async fn manager"));

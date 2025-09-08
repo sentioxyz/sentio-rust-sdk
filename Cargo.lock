@@ -1154,6 +1154,7 @@ name = "eth-decode-log"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "derive_builder",
  "ethers",
  "hex",
  "lru",

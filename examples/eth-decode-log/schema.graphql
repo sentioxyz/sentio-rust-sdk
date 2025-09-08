@@ -1,0 +1,19 @@
+
+type DecodedLog @entity(immutable: true) {
+    id: ID!
+    chainId: String!
+    transactionHash: String!
+    transactionIndex: Int!
+    timestamp: Timestamp!
+    blockNumber: Int!
+    blockHash: String!
+    logIndex: Int!
+    logAddress: String!
+    data: String!
+    topics: [String!]!
+    args: String @dbType(type: "json")
+    argKeyMappings: [String!]!
+    signature: String!
+    eventName: String!
+    argTypes: [String!]!
+}

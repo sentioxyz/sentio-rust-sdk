@@ -1,6 +1,6 @@
 use crate::core::plugin::FullPlugin;
 use crate::core::{
-    AsyncPluginProcessor, BaseProcessor, HandlerRegister, MetaData, Plugin, PluginRegister,
+    AsyncPluginProcessor, BaseProcessor, HandlerRegister, Plugin, PluginRegister,
     StateCollector, StateUpdateCollector, RUNTIME_CONTEXT,
 };
 use crate::eth::eth_processor::{EthProcessorImpl, EthEvent, TimeOrBlock};
@@ -223,7 +223,13 @@ impl EthPlugin {
                 // Create context with state collector
                 let context =
                     crate::eth::context::EthContext::with_state_collector(state_collector);
-                let metadata = MetaData::default();
+                
+                // Extract metadata from all available parsed data sources
+                let metadata = parsed_data.extract_metadata(
+                    data.chain_id.clone(),
+                    processor.name().to_string()
+                );
+
                 let runtime_ctx = RUNTIME_CONTEXT.get();
 
                 // Execute the user handler with owned context using trait method

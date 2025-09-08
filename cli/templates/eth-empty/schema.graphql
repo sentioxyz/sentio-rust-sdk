@@ -1,0 +1,9 @@
+# Define your entities here
+# This is a basic schema to get you started
+
+type ExampleEntity @entity {
+    id: ID!
+    timestamp: Timestamp!
+    blockNumber: BigInt!
+    transactionHash: String!
+}

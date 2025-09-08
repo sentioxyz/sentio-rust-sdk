@@ -42,6 +42,9 @@ enum Commands {
     Init {
         /// Name of the new project
         name: String,
+        /// Template to use (eth-empty)
+        #[arg(short, long, default_value = "eth-empty")]
+        template: String,
     },
     /// Generate code for handlers and contract bindings
     Gen {
@@ -184,8 +187,8 @@ async fn main() -> Result<()> {
             };
             command.execute().await?;
         }
-        Commands::Init { name } => {
-            let command = init::InitCommand { name };
+        Commands::Init { name, template } => {
+            let command = init::InitCommand { name, template };
             command.execute().await?;
         }
         Commands::Gen { no_handlers, no_contracts, contract } => {

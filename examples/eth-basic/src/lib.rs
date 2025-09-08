@@ -1,5 +1,6 @@
 pub mod processor;
-pub mod entities;
+pub mod generated;
 
 pub use processor::*;
+pub use generated::entities::*;
 

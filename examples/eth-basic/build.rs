@@ -1,5 +1,5 @@
 use std::env;
-use sentio_cli::generate_code_sync;
+use sentio_cli::generate_code;
 
 fn main() {
     let project_dir = env::var("CARGO_MANIFEST_DIR")
@@ -13,26 +13,5 @@ fn main() {
     println!("cargo:rerun-if-changed=sui.yaml");
     
     // Run code generation using the sentio CLI library
-    match generate_code_sync(&project_dir) {
-        Ok(results) => {
-            if results.is_empty() {
-                // No generators found to run, which is fine
-            } else {
-                let total_files: usize = results.iter().map(|r| r.files_generated.len()).sum();
-                if total_files > 0 {
-                    println!("cargo:warning=✅ Code generation completed: {} files generated", total_files);
-                }
-                
-                // Report any failures
-                for result in &results {
-                    if !result.success {
-                        println!("cargo:warning=❌ {} generator failed: {}", result.generator_name, result.message);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            println!("cargo:warning=❌ Code generation failed: {}", e);
-        }
-    }
+    generate_code(&project_dir); 
 }

@@ -3,6 +3,7 @@
 //! This module provides a simple, synchronous API for all code generators.
 //! It handles source discovery, validation, and generation coordination.
 
+use std::io::Write;
 use anyhow::Result;
 use derive_builder::Builder;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,21 @@ impl Codegen {
                     }),
                 }
             }
+        }
+
+        if !results.is_empty() {
+            // generate a lib.rs
+            let mut lib_rs = PathBuf::from(dst_dir);
+            lib_rs.push("lib.rs");
+            let mut lib_rs_file = std::fs::File::create(lib_rs)?;
+            for result in &results {
+                for file in &result.files_generated {
+                    let file_name = file.file_name().unwrap().to_str().unwrap();
+                    let mod_name = file_name.split(".").next().unwrap();
+                    lib_rs_file.write_all(format!("pub mod {};\n", mod_name).as_bytes())?;
+                }
+            }
+            lib_rs_file.write_all(b"\n")?;
         }
         
         Ok(results)

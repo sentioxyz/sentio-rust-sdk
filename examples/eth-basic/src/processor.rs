@@ -1,10 +1,9 @@
 use sentio_sdk::core::Context;
-use sentio_sdk::entity::Store;
+use crate::generated::entities::TransferBuilder;
 use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::eth::eth_processor::*;
 use sentio_sdk::eth::{EthEventHandler, EventMarker};
 use sentio_sdk::{async_trait, EntityStore};
-use crate::entities::transfer::TransferBuilder;
 use sentio_sdk::entity::{BigInt, BigDecimal, Timestamp, ID, Entity};
 use std::collections::HashMap;
 
@@ -17,9 +16,6 @@ pub struct MyEthProcessor {
 
 impl MyEthProcessor {
     pub fn new() -> Self {
-        // Initialize with entity store for demonstration
-        let store = Store::default();
- 
         Self {
             address: "0x1234567890123456789012345678901234567890".to_string(),
             chain_id: "1".to_string(),

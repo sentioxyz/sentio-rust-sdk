@@ -1,8 +1,5 @@
 use sentio_sdk::Server;
-
-mod processor;
-mod entities;
-use processor::*;
+use eth_basic::*;
 use sentio_sdk::eth::eth_processor::EthProcessor;
 
 fn main() {

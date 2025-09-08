@@ -226,9 +226,6 @@ impl EntityCodeGenerator {
             }
         }
 
-        // Store operation convenience methods
-        self.add_store_operations(&mut helper_impl, entity)?;
-
         scope.push_impl(helper_impl);
         Ok(())
     }
@@ -341,43 +338,6 @@ impl EntityCodeGenerator {
         Ok(())
     }
 
-    /// Add store operation convenience methods
-    fn add_store_operations(&self, _impl_block: &mut Impl, _entity: &EntityType) -> Result<()> {
-        // // save method
-        // let mut save_fn = Function::new("save");
-        // save_fn.doc("Save this entity to the store")
-        //        .vis("pub")
-        //        .set_async(true)
-        //        .arg_ref_self()
-        //        .arg("store", "&dyn EntityStore")
-        //        .ret("EntityResult<()>")
-        //        .line("store.upsert(self).await");
-        // impl_block.push_fn(save_fn);
-        //
-        // // load method (static)
-        // let mut load_fn = Function::new("load");
-        // load_fn.doc("Load an entity from the store by ID")
-        //        .vis("pub")
-        //        .set_async(true)
-        //        .arg("id", &format!("&<{} as Entity>::Id", entity.name))
-        //        .arg("store", "&dyn EntityStore")
-        //        .ret(&format!("EntityResult<Option<{}>>", entity.name))
-        //        .line("store.get(id).await");
-        // impl_block.push_fn(load_fn);
-        //
-        // // delete method
-        // let mut delete_fn = Function::new("delete");
-        // delete_fn.doc("Delete this entity from the store")
-        //          .vis("pub")
-        //          .set_async(true)
-        //          .arg_ref_self()
-        //          .arg("store", "&dyn EntityStore")
-        //          .ret("EntityResult<()>")
-        //          .line("store.delete(&self.id).await");
-        // impl_block.push_fn(delete_fn);
-
-        Ok(())
-    }
 
     /// Convert FieldType to Rust type string
     fn field_type_to_rust(&self, field_type: &FieldType, schema: &EntitySchema, _is_id_field: bool) -> Result<String> {
@@ -419,26 +379,44 @@ impl EntityCodeGenerator {
         }
     }
     
-    /// Generate mod.rs for entities module
-    fn generate_entities_mod(&self, schema: &EntitySchema) -> Result<String> {
+    /// Generate all entities in a single entities.rs file
+    fn generate_all_entities(&self, schema: &EntitySchema) -> Result<String> {
         let mut content = String::new();
-        content.push_str("//! Generated entities module\n");
-        content.push_str("//!\n");
+        
+        // File header (no inner attributes for include! compatibility)
+        content.push_str("// Generated entities\n");
         content.push_str("// This file is auto-generated. Do not edit manually.\n\n");
         
-        // Add module declarations
-        let entities: Vec<_> = schema.get_entities().map(|(name, _)| name).collect();
-        for entity_name in &entities {
-            content.push_str(&format!("pub mod {};\n", entity_name.to_lowercase()));
-        }
-        content.push('\n');
+        // Add common imports
+        content.push_str("use sentio_sdk::entity::*;\n");
+        content.push_str("use derive_builder::Builder;\n");
+        content.push_str("use serde::{Serialize, Deserialize};\n\n");
         
-        // Add re-exports
-        for entity_name in entities {
-            content.push_str(&format!("pub use {}::{};\n", entity_name.to_lowercase(), entity_name));
+        // Generate each entity
+        for (entity_name, entity) in schema.get_entities() {
+            let entity_code = self.generate_entity_struct_only(entity, schema)
+                .with_context(|| format!("Failed to generate entity: {}", entity_name))?;
+            content.push_str(&entity_code);
+            content.push_str("\n\n");
         }
         
         Ok(content)
+    }
+    
+    /// Generate just the entity struct and implementations without imports/header
+    fn generate_entity_struct_only(&self, entity: &EntityType, schema: &EntitySchema) -> Result<String> {
+        let mut scope = Scope::new();
+        
+        // Generate the main entity struct
+        self.generate_entity_struct(&mut scope, entity, schema)?;
+        
+        // Generate Entity trait implementation
+        self.generate_entity_trait_impl(&mut scope, entity)?;
+        
+        // Generate helper methods implementation
+        self.generate_helper_impl(&mut scope, entity, schema)?;
+        
+        Ok(scope.to_string())
     }
 }
 
@@ -480,40 +458,27 @@ impl CodeGenerator for EntityCodeGenerator {
         
         let mut generated_files = Vec::new();
         
-        // Create entities output directory
-        let entities_dir = dst_dir.join("entities");
-        if !entities_dir.exists() {
-            fs::create_dir_all(&entities_dir)
-                .with_context(|| format!("Failed to create entities directory: {}", entities_dir.display()))?;
+        let output_dir = dst_dir;
+        
+        // Ensure output directory exists
+        if !output_dir.exists() {
+            fs::create_dir_all(&output_dir)
+                .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
         }
         
-        // Generate code for each entity
-        for (entity_name, entity) in schema.get_entities() {
-            let code = self.generate_entity(entity, &schema)
-                .with_context(|| format!("Failed to generate code for entity: {}", entity_name))?;
-                
-            let file_name = format!("{}.rs", entity_name.to_lowercase());
-            let output_path = entities_dir.join(&file_name);
-            
-            fs::write(&output_path, code)
-                .with_context(|| format!("Failed to write entity file: {}", output_path.display()))?;
-                
-            generated_files.push(output_path);
-        }
-        
-        // Generate mod.rs file for entities module
-        let mod_content = self.generate_entities_mod(&schema)?;
-        let mod_path = entities_dir.join("mod.rs");
-        fs::write(&mod_path, mod_content)
-            .with_context(|| format!("Failed to write entities mod file: {}", mod_path.display()))?;
-        generated_files.push(mod_path);
+        // Generate all entities in a single entities.rs file
+        let entities_content = self.generate_all_entities(&schema)?;
+        let entities_path = output_dir.join("entities.rs");
+        fs::write(&entities_path, entities_content)
+            .with_context(|| format!("Failed to write entities file: {}", entities_path.display()))?;
+        generated_files.push(entities_path);
         
         let entity_count = schema.get_entities().count();
         Ok(CodegenResult {
             generator_name: self.generator_name().to_string(),
             files_generated: generated_files,
             success: true,
-            message: format!("Generated {} entities", entity_count),
+            message: format!("Generated {} entities in entities.rs", entity_count),
         })
     }
 }

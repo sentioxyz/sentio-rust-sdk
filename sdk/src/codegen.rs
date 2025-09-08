@@ -71,9 +71,9 @@ impl Codegen {
         }
 
         if !results.is_empty() {
-            // generate a lib.rs
+            // generate a mod.rs
             let mut lib_rs = PathBuf::from(dst_dir);
-            lib_rs.push("lib.rs");
+            lib_rs.push("mod.rs");
             let mut lib_rs_file = std::fs::File::create(lib_rs)?;
             for result in &results {
                 for file in &result.files_generated {

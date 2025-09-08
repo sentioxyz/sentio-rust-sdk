@@ -57,10 +57,11 @@ impl Server {
     }
 
     /// Initialize logging based on debug flag
+    /// Gracefully handles cases where a global subscriber is already initialized
     fn init_logging(debug: bool) {
         let level = if debug { "debug" } else { "info" };
 
-        tracing_subscriber::fmt()
+        let result = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| level.into()),
@@ -69,7 +70,17 @@ impl Server {
             .with_thread_ids(debug)
             .with_line_number(debug)
             .with_file(debug)
-            .init();
+            .try_init();
+
+        match result {
+            Ok(_) => {
+                // Successfully initialized logging
+            }
+            Err(_) => {
+                // Global subscriber already set, which is fine
+                // This allows users to initialize their own logging if they prefer
+            }
+        }
     }
 
     /// Start the gRPC server and listen for incoming calls (blocking)

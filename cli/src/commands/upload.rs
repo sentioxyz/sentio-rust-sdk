@@ -403,11 +403,11 @@ impl UploadCommand {
         if !commit_sha.is_empty() {
             println!("   Git commit: {}", commit_sha);
         }
-        println!("   Project: {}", finish_response.project_full_slug);
+        println!("   Project: {}", full_project_name);
         println!("   Version: {}", finish_response.version);
         println!(
             "   Status URL: {}/{}/datasource/{}",
-            config.host, finish_response.project_full_slug, finish_response.processor_id
+            config.host, full_project_name, finish_response.processor_id
         );
 
         Ok(())

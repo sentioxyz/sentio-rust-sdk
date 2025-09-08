@@ -111,16 +111,18 @@ impl CrossCompiler {
     ) -> Result<PathBuf> {
         let cross_toml_path = project_path.join("Cross.toml");
 
-        // Generate Cross.toml content with protoc installation for the target
-        let cross_toml_content = self.generate_cross_toml_content();
+        if !cross_toml_path.exists() {
+            // Generate Cross.toml content with protoc installation for the target
+            let cross_toml_content = self.generate_cross_toml_content();
 
-        // Write or update Cross.toml
-        tokio::fs::write(&cross_toml_path, cross_toml_content)
-            .await
-            .context("Failed to write Cross.toml")?;
+            // Write or update Cross.toml
+            tokio::fs::write(&cross_toml_path, cross_toml_content)
+                .await
+                .context("Failed to write Cross.toml")?;
 
-        if verbose {
-            println!("Generated Cross.toml for target: {}", self.target);
+            if verbose {
+                println!("Generated Cross.toml for target: {}", self.target);
+            }
         }
 
         Ok(cross_toml_path)

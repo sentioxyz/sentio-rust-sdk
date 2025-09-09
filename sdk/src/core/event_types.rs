@@ -278,10 +278,9 @@ impl TryFrom<&RichValue> for AttributeValue {
                 Ok(AttributeValue::Object(map))
             }
             Some(rich_value::Value::TimestampValue(ts)) => {
-                let dt: DateTime<Utc> = DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?
-                    .with_timezone(&Utc);
-                Ok(AttributeValue::Timestamp(dt))
+                let timestamp = Timestamp::from_timestamp(ts.seconds, ts.nanos as u32)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid timestamp: seconds={}, nanos={}", ts.seconds, ts.nanos))?;
+                Ok(AttributeValue::Timestamp(timestamp))
             }
             Some(rich_value::Value::BigintValue(bi)) => {
                 Ok(AttributeValue::BigInt(proto_to_bigint(bi)))

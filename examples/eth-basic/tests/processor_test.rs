@@ -206,7 +206,7 @@ async fn test_entity_storage_and_retrieval() {
     let result = eth_facet.test_log(transfer_log.clone(), Some(chain_ids::ETHEREUM)).await;
     
     // Now we can access the database directly from the test result
-    let transfer_count = result.db.get_table_count("transfer").await;
+    let transfer_count = result.db.get_table_count("Transfer").await;
     
     println!("📊 Database query results:");
     println!("  - Transfer entities found: {}", transfer_count);
@@ -241,7 +241,7 @@ async fn test_entity_storage_and_retrieval() {
     
     let final_result = eth_facet.test_log(final_log, Some(chain_ids::ETHEREUM)).await;
     
-    let final_count = final_result.db.get_table_count("transfer").await;
+    let final_count = final_result.db.get_table_count("Transfer").await;
     println!("  - Total transfer entities after multiple events: {}", final_count);
     assert!(final_count >= 4, "Expected at least 4 Transfer entities after processing multiple events");
     

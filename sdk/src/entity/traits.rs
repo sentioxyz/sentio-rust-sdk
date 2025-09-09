@@ -17,17 +17,12 @@ pub trait Entity:
     /// The type used for this entity's primary key
     type Id: EntityId;
 
-    /// The table/collection name for this entity
-    const TABLE_NAME: &'static str;
+    /// The entity name (used as table/collection name)
+    const NAME: &'static str;
 
     /// Get the entity's primary key
     fn id(&self) -> &Self::Id;
-
-    /// Get the table name (convenience method)
-    fn table_name() -> &'static str {
-        Self::TABLE_NAME
-    }
-
+    
     /// Convert entity to JSON for storage
     fn to_json(&self) -> Result<serde_json::Value>
     where

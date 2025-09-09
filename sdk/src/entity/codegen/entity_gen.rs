@@ -195,13 +195,13 @@ impl EntityCodeGenerator {
         // Determine ID type
         let id_type = if entity.is_timeseries() { "i64" } else { "ID" };
 
-        // Add TABLE_NAME constant manually since rust-codegen doesn't support associate_const
+        // Add NAME constant manually since rust-codegen doesn't support associate_const
         // We need to add it inside the impl block as raw content
         let impl_code = format!(
-            "impl Entity for {} {{\n    type Id = {};\n    const TABLE_NAME: &'static str = \"{}\";\n\n    fn id(&self) -> &Self::Id {{\n        &self.id\n    }}\n}}", 
+            "impl Entity for {} {{\n    type Id = {};\n    const NAME: &'static str = \"{}\";\n\n    fn id(&self) -> &Self::Id {{\n        &self.id\n    }}\n}}", 
             entity.name, 
             id_type,
-            entity.name.to_lowercase()
+            entity.name
         );
         
         scope.raw(&impl_code);
@@ -517,7 +517,7 @@ mod tests {
         assert!(code.contains("id: ID") || code.contains("id :ID"));
         assert!(code.contains("name: String") || code.contains("name :String"));
         assert!(code.contains("impl Entity for User"));
-        assert!(code.contains("TABLE_NAME") && (code.contains("users") || code.contains("user")));
+        assert!(code.contains("NAME") && code.contains("User"));
     }
 
     #[test]
@@ -585,7 +585,7 @@ mod tests {
         assert!(code.contains("balance: BigInt") || code.contains("balance :BigInt"));
         assert!(code.contains("address: String") || code.contains("address :String"));
         assert!(code.contains("impl Entity for TokenBalance"));
-        assert!(code.contains("TABLE_NAME"));
+        assert!(code.contains("NAME"));
 
         println!("Generated code:\n{}", code);
     }

@@ -52,8 +52,93 @@ impl From<uuid::Uuid> for ID {
 /// BigDecimal type for high-precision decimal numbers
 pub type BigDecimal = BigDecimalImpl;
 
-/// Timestamp type for date/time values
-pub type Timestamp = DateTime<Utc>;
+/// Timestamp type for date/time values with proper protobuf serialization
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Timestamp(DateTime<Utc>);
+
+impl Timestamp {
+    /// Create a new Timestamp from a DateTime<Utc>
+    pub fn new(datetime: DateTime<Utc>) -> Self {
+        Self(datetime)
+    }
+
+    /// Create a Timestamp from seconds since Unix epoch
+    pub fn from_timestamp(secs: i64, nsecs: u32) -> Option<Self> {
+        DateTime::from_timestamp(secs, nsecs).map(|dt| Self(dt.with_timezone(&Utc)))
+    }
+
+    /// Create a Timestamp from milliseconds since Unix epoch
+    pub fn from_timestamp_millis(millis: i64) -> Option<Self> {
+        DateTime::from_timestamp_millis(millis).map(|dt| Self(dt.with_timezone(&Utc)))
+    }
+
+    /// Create a Timestamp representing the current moment
+    pub fn now() -> Self {
+        Self(Utc::now())
+    }
+
+    /// Get the inner DateTime<Utc>
+    pub fn datetime(&self) -> &DateTime<Utc> {
+        &self.0
+    }
+
+    /// Convert to DateTime<Utc>
+    pub fn into_datetime(self) -> DateTime<Utc> {
+        self.0
+    }
+
+    /// Get seconds since Unix epoch
+    pub fn timestamp(&self) -> i64 {
+        self.0.timestamp()
+    }
+
+    /// Get nanoseconds component
+    pub fn timestamp_subsec_nanos(&self) -> u32 {
+        self.0.timestamp_subsec_nanos()
+    }
+
+    /// Convert to RFC3339 string
+    pub fn to_rfc3339(&self) -> String {
+        self.0.to_rfc3339()
+    }
+
+    /// Parse from RFC3339 string
+    pub fn from_rfc3339(s: &str) -> Result<Self, chrono::ParseError> {
+        DateTime::parse_from_rfc3339(s).map(|dt| Self(dt.with_timezone(&Utc)))
+    }
+}
+
+impl From<DateTime<Utc>> for Timestamp {
+    fn from(datetime: DateTime<Utc>) -> Self {
+        Self(datetime)
+    }
+}
+
+impl From<Timestamp> for DateTime<Utc> {
+    fn from(timestamp: Timestamp) -> Self {
+        timestamp.0
+    }
+}
+
+impl std::ops::Deref for Timestamp {
+    type Target = DateTime<Utc>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.to_rfc3339())
+    }
+}
+
+impl Default for Timestamp {
+    fn default() -> Self {
+        Self::now()
+    }
+}
 
 /// Bytes type for binary data
 pub type Bytes = bytes::Bytes;
@@ -401,5 +486,93 @@ impl From<anyhow::Error> for EntityError {
         EntityError::Internal {
             message: error.to_string(),
         }
+    }
+}
+
+// Custom serde implementations for Timestamp to ensure proper protobuf serialization
+impl Serialize for Timestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Create a struct-like serialization that will be handled by our custom RichValueSerializer
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Timestamp", 2)?;
+        state.serialize_field("seconds", &self.0.timestamp())?;
+        state.serialize_field("nanos", &(self.0.timestamp_subsec_nanos() as i32))?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        struct TimestampVisitor;
+
+        impl<'de> Visitor<'de> for TimestampVisitor {
+            type Value = Timestamp;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a Timestamp with seconds and nanos fields")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<Timestamp, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut seconds = None;
+                let mut nanos = None;
+                
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        "seconds" => {
+                            if seconds.is_some() {
+                                return Err(de::Error::duplicate_field("seconds"));
+                            }
+                            seconds = Some(map.next_value()?);
+                        }
+                        "nanos" => {
+                            if nanos.is_some() {
+                                return Err(de::Error::duplicate_field("nanos"));
+                            }
+                            nanos = Some(map.next_value()?);
+                        }
+                        _ => {
+                            // Ignore unknown fields
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                
+                let seconds = seconds.ok_or_else(|| de::Error::missing_field("seconds"))?;
+                let nanos: i32 = nanos.ok_or_else(|| de::Error::missing_field("nanos"))?;
+                
+                Timestamp::from_timestamp(seconds, nanos as u32)
+                    .ok_or_else(|| de::Error::custom("Invalid timestamp"))
+            }
+
+            // Also handle string deserialization for backwards compatibility
+            fn visit_str<E>(self, value: &str) -> Result<Timestamp, E>
+            where
+                E: de::Error,
+            {
+                Timestamp::from_rfc3339(value)
+                    .map_err(|e| de::Error::custom(format!("Invalid RFC3339 timestamp: {}", e)))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Timestamp, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(TimestampVisitor)
     }
 }

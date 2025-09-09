@@ -10,7 +10,6 @@ use crate::core::conversions::{
 };
 use crate::entity::types::{BigDecimal, BigInt, Bytes, ID, Timestamp};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::fmt;
@@ -297,9 +296,8 @@ impl FromRichValue for Timestamp {
     fn from_rich_value(value: &RichValue) -> Result<Self> {
         match &value.value {
             Some(rich_value::Value::TimestampValue(ts)) => {
-                let datetime = DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid timestamp"))?;
-                Ok(datetime.with_timezone(&Utc))
+                Timestamp::from_timestamp(ts.seconds, ts.nanos as u32)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid timestamp: seconds={}, nanos={}", ts.seconds, ts.nanos))
             }
             _ => Err(anyhow::anyhow!("Expected timestamp value")),
         }
@@ -1316,6 +1314,32 @@ impl serde::ser::SerializeStruct for RichValueStructSerializer {
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
+        // Check if this is a Timestamp struct (has "seconds" and "nanos" fields)
+        if self.fields.len() == 2 
+            && self.fields.contains_key("seconds") 
+            && self.fields.contains_key("nanos") {
+            
+            // Extract seconds and nanos values
+            if let (Some(seconds_value), Some(nanos_value)) = 
+                (self.fields.get("seconds"), self.fields.get("nanos")) {
+                
+                if let (Some(rich_value::Value::Int64Value(seconds)), Some(rich_value::Value::IntValue(nanos))) = 
+                    (&seconds_value.value, &nanos_value.value) {
+                    
+                    // Create protobuf Timestamp
+                    let prost_timestamp = prost_types::Timestamp {
+                        seconds: *seconds,
+                        nanos: *nanos,
+                    };
+                    
+                    return Ok(RichValue {
+                        value: Some(rich_value::Value::TimestampValue(prost_timestamp)),
+                    });
+                }
+            }
+        }
+        
+        // Default struct serialization
         Ok(RichValue {
             value: Some(rich_value::Value::StructValue(RichStruct {
                 fields: self.fields,
@@ -2237,6 +2261,35 @@ mod tests {
         let rich_value = opt_none.to_rich_value().unwrap();
         let converted_back = Option::<i32>::from_rich_value(&rich_value).unwrap();
         assert_eq!(opt_none, converted_back);
+    }
+
+    #[test]
+    fn test_timestamp_conversion() {
+        use chrono::{DateTime, Utc};
+        
+        // Create a test timestamp
+        let original_timestamp = Timestamp::from_timestamp(1672531200, 123456789)
+            .expect("Valid timestamp");
+
+        // Convert to RichValue (this is the serialization step)
+        let rich_value = original_timestamp.to_rich_value().unwrap();
+        
+        // Verify the structure contains the correct protobuf timestamp
+        match &rich_value.value {
+            Some(rich_value::Value::TimestampValue(ts)) => {
+                assert_eq!(ts.seconds, 1672531200);
+                assert_eq!(ts.nanos, 123456789);
+            }
+            _ => panic!("Expected TimestampValue variant"),
+        }
+
+        // Convert back from RichValue (this is the deserialization step)
+        let converted_back = Timestamp::from_rich_value(&rich_value).unwrap();
+        
+        // Verify round-trip conversion
+        assert_eq!(original_timestamp.timestamp(), converted_back.timestamp());
+        assert_eq!(original_timestamp.timestamp_subsec_nanos(), converted_back.timestamp_subsec_nanos());
+        assert_eq!(original_timestamp, converted_back);
     }
 
     #[test]

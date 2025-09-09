@@ -2,6 +2,9 @@
 //! This test demonstrates direct RichStruct ↔ Entity conversion
 
 use sentio_sdk::entity::{ToRichValue, FromRichValue, to_rich_struct, from_rich_struct};
+use sentio_sdk::entity::types::Timestamp;
+use sentio_sdk::common::rich_value;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -177,4 +180,85 @@ fn test_nested_struct_serialization() {
     assert_eq!(nested, converted_nested);
     
     println!("✅ Nested struct serialization works perfectly without JSON!");
+}
+
+#[test]
+fn test_timestamp_serialization_fix() {
+    println!("⏰ Testing custom Timestamp serialization (should use timestamp_value, NOT string_value!)");
+
+    // Create a specific timestamp to test with (similar to the production issue)
+    let timestamp = Timestamp::new(
+        DateTime::parse_from_rfc3339("1970-01-10T18:35:30Z").unwrap().with_timezone(&Utc)
+    );
+
+    println!("🔍 Testing timestamp: {:?}", timestamp);
+
+    // Test direct RichValue serialization
+    let rich_value = timestamp.to_rich_value().expect("Timestamp should serialize to RichValue");
+    
+    // CRITICAL TEST: Verify it's using timestamp_value, NOT string_value
+    match &rich_value.value {
+        Some(rich_value::Value::TimestampValue(ts)) => {
+            println!("✅ SUCCESS: Timestamp correctly serialized as timestamp_value!");
+            println!("   - Timestamp seconds: {}", ts.seconds);
+            println!("   - Timestamp nanos: {}", ts.nanos);
+            
+            // Verify the timestamp values are correct
+            assert_eq!(ts.seconds, timestamp.timestamp());
+            assert_eq!(ts.nanos, timestamp.timestamp_subsec_nanos() as i32);
+        }
+        Some(rich_value::Value::StringValue(s)) => {
+            panic!("❌ FAILURE: Timestamp incorrectly serialized as string_value: '{}'", s);
+        }
+        other => {
+            panic!("❌ FAILURE: Timestamp serialized as unexpected type: {:?}", other);
+        }
+    }
+
+    // Test round-trip conversion
+    let converted_timestamp = Timestamp::from_rich_value(&rich_value)
+        .expect("Should be able to deserialize timestamp");
+    assert_eq!(timestamp, converted_timestamp);
+    println!("✅ Round-trip conversion successful!");
+
+    // Test within a struct (this simulates the real-world entity scenario)
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct EntityWithTimestamp {
+        pub id: String,
+        pub timestamp: Timestamp,
+    }
+
+    let entity = EntityWithTimestamp {
+        id: "test-entity".to_string(),
+        timestamp: timestamp.clone(),
+    };
+
+    println!("🏗️  Testing Timestamp within entity struct...");
+
+    // Serialize the entity to RichStruct
+    let rich_struct = to_rich_struct(&entity).expect("Entity serialization should work");
+    
+    // Verify the timestamp field exists
+    assert!(rich_struct.fields.contains_key("timestamp"));
+    
+    // Get the timestamp field and verify it's a timestamp_value
+    let timestamp_field = rich_struct.fields.get("timestamp").unwrap();
+    match &timestamp_field.value {
+        Some(rich_value::Value::TimestampValue(ts)) => {
+            println!("✅ SUCCESS: Entity timestamp field correctly serialized as timestamp_value!");
+            println!("   - Timestamp seconds: {}", ts.seconds);
+            println!("   - Timestamp nanos: {}", ts.nanos);
+        }
+        Some(rich_value::Value::StringValue(s)) => {
+            panic!("❌ FAILURE: Entity timestamp field incorrectly serialized as string_value: '{}'", s);
+        }
+        other => {
+            panic!("❌ FAILURE: Entity timestamp field serialized as unexpected type: {:?}", other);
+        }
+    }
+
+    // Test entity round-trip conversion
+    let converted_entity: EntityWithTimestamp = from_rich_struct(&rich_struct)
+        .expect("Entity deserialization should work");
+    assert_eq!(entity, converted_entity);
 }

@@ -27,10 +27,7 @@ impl<B: StorageBackend> StoreImpl<B> {
         Self { backend }
     }
 
-    /// Get table name for an entity type
-    fn get_table_name<T: Entity>() -> String {
-        T::table_name().to_string()
-    }
+
 
     /// Convert db_response::Value directly to entity
     fn db_value_to_entities<T: Entity>(db_response_value: db_response::Value) -> Result<Vec<T>>
@@ -66,10 +63,9 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        let table_name = Self::get_table_name::<T>();
         let id_string = id.as_string();
 
-        if let Some(db_value) = self.backend.get(&table_name, &id_string).await? {
+        if let Some(db_value) = self.backend.get(T::NAME, &id_string).await? {
             let entities = Self::db_value_to_entities::<T>(db_value)?;
             if let Some(entity) = entities.into_iter().next() {
                 Ok(Some(entity))
@@ -111,12 +107,11 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: serde::Serialize,
     {
-        let table_name = Self::get_table_name::<T>();
         let id_string = entity.id().as_string();
         let data = T::to_rich_struct(entity)?;
 
         self.backend
-            .upsert(vec![table_name], vec![id_string], vec![data])
+            .upsert(vec![T::NAME.to_string()], vec![id_string], vec![data])
             .await
     }
 
@@ -124,8 +119,7 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: serde::Serialize,
     {
-        let table_name = Self::get_table_name::<T>();
-        let tables = vec![table_name.clone(); entities.len()];
+         let tables = vec![T::NAME.to_string(); entities.len()];
         let ids = entities
             .iter()
             .map(|entity| entity.id().as_string())
@@ -139,15 +133,13 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     }
 
     async fn delete<T: Entity>(&self, id: &T::Id) -> Result<()> {
-        let table_name = Self::get_table_name::<T>();
-        let id_string = id.as_string();
+         let id_string = id.as_string();
 
-        self.backend.delete(vec![table_name], vec![id_string]).await
+        self.backend.delete(vec![T::NAME.to_string()], vec![id_string]).await
     }
 
     async fn delete_many<T: Entity>(&self, ids: &[T::Id]) -> Result<()> {
-        let table_name = Self::get_table_name::<T>();
-        let tables = vec![table_name.clone(); ids.len()];
+         let tables = vec![T::NAME.to_string(); ids.len()];
         let ids = ids.iter().map(|id| id.as_string()).collect::<Vec<_>>();
         self.backend.delete(tables, ids).await
     }
@@ -156,8 +148,7 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: for<'de> serde::Deserialize<'de> + serde::Serialize,
     {
-        let table_name = Self::get_table_name::<T>();
-        let mut filters = vec![];
+         let mut filters = vec![];
 
         for f in options.filters {
             let value = f.value.to_rich_value()?;
@@ -174,7 +165,7 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
         let response = self
             .backend
             .list(
-                &table_name,
+                T::NAME,
                 filters,
                 options.cursor.unwrap_or_default(),
                 options.limit,

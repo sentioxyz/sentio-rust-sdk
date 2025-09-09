@@ -75,7 +75,6 @@ impl ParsedEthData {
             if metadata.block_number == 0 {
                 metadata.block_number = block.number.unwrap_or_default().as_u64();
             }
-            metadata.block_timestamp = Some(block.timestamp.as_u64());
         }
 
         metadata

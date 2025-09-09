@@ -1,10 +1,9 @@
 use std::env;
 use anyhow::anyhow;
-use ethers::abi::{Event, ParamType, RawLog, Token};
-use serde::Serialize;
+use ethers::abi::{Event as EthersEvent, ParamType, RawLog, Token};
 use tracing::{debug, info, warn};
 use sentio_sdk::{async_trait, Entity};
-use sentio_sdk::core::Context;
+use sentio_sdk::core::{Context, Event};
 use sentio_sdk::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
 use sentio_sdk::eth::{EthEventHandler, EventMarker};
 use sentio_sdk::eth::context::EthContext;
@@ -12,18 +11,6 @@ use sentio_sdk::entity::{ID, Timestamp};
 use crate::abi_client::AbiClient;
 use crate::generated::entities::DecodedLogBuilder;
 
-#[derive(Debug, Clone, Serialize)]
-struct ErrorLogData {
-    distinct_id: String,
-    transaction_hash: String,
-    transaction_index: u64,
-    block_number: u64,
-    block_hash: String,
-    log_address: String,
-    data: String,
-    topics: String,
-    error: String,
-}
 
 pub(crate) struct LogDecoderProcessor {
     address: String,
@@ -35,7 +22,7 @@ impl LogDecoderProcessor {
     pub fn new() -> Self {
         Self {
             address: "".to_string(), // Empty means all contracts
-            chain_id: std::env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string()),
+            chain_id: env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string()),
             name: "Ethereum Log Decoder".to_string(),
         }
     }
@@ -77,24 +64,14 @@ impl EventMarker for AllEventsMarker {
 
 #[async_trait]
 impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
-    async fn on_event(&self, event: EthEvent, ctx: EthContext) {
+    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
         // Can use context directly in async closure now!
         let ctx_chain_id = ctx.chain_id();
         let ctx_transaction_hash = ctx.transaction_hash();
 
         debug!("processing {}, {}", ctx_chain_id, ctx_transaction_hash);
 
-        // Create a basic log identifier from the event itself
-        let log_id = format!(
-            "{}_{}",
-            format!("{:?}", event.log.address),
-            event
-                .log
-                .topics
-                .get(0)
-                .map(|t| format!("{:?}", t))
-                .unwrap_or_else(|| "unknown".to_string())
-        );
+         let log_id =  format!("{}_{}_{}", ctx.block_number(), ctx.transaction_index(), ctx.log_index());
 
         // Initialize ABI client with environment variables
         let sentio_host = env::var("SENTIO_HOST")
@@ -140,27 +117,37 @@ impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
                 debug!("No ABI found for log: {}", log_id);
             }
             Err(e) => {
-                let error_log = ErrorLogData {
-                    distinct_id: log_id,
-                    transaction_hash: "".to_string(),
-                    transaction_index: 0,
-                    block_number: 0,
-                    block_hash: "".to_string(),
-                    log_address: format!("{:?}", event.log.address),
-                    data: format!("{:?}", event.log.data),
-                    topics: serde_json::to_string(
+                // Create event logger to emit structured error event
+                let event_logger = ctx.base_context().event_logger();
+                
+                // Create a structured event for the decode failure
+                let decode_error_event = Event::name("log_decode_error")
+                    .distinct_id(&log_id)
+                    .message(&format!("Failed to decode log: {}", e))
+                    .attr("log_id", log_id.clone())
+                    .attr("transaction_hash", ctx.transaction_hash())
+                    .attr("transaction_index", ctx.transaction_index() as i64)
+                    .attr("block_number", ctx.block_number() as i64)
+                    .attr("log_index", ctx.log_index() as i64)
+                    .attr("log_address", format!("{:?}", event.log.address))
+                    .attr("data", format!("{:?}", event.log.data))
+                    .attr("topics", serde_json::to_string(
                         &event
                             .log
                             .topics
                             .iter()
                             .map(|t| format!("{:?}", t))
                             .collect::<Vec<_>>(),
-                    )
-                        .unwrap_or_else(|_| "[]".to_string()),
-                    error: e.to_string(),
-                };
+                    ).unwrap_or_else(|_| "[]".to_string()))
+                    .attr("error", e.to_string())
+                    .attr("chain_id", ctx.chain_id());
 
-                warn!("Failed to decode log: {:?}", error_log);
+                // Emit the event and keep the warning for backward compatibility
+                if let Err(emit_error) = event_logger.emit(&decode_error_event).await {
+                    warn!("Failed to emit decode error event: {}", emit_error);
+                }
+                
+                warn!("Failed to decode log {}: {}", log_id, e);
             }
         }
     }
@@ -234,7 +221,7 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
 
 fn parse_log_with_ethers(abi_item: &str, event: &EthEvent) -> anyhow::Result<DecodedLogResult> {
     // Parse the ABI item as an Event
-    let event_abi: Event = serde_json::from_str(abi_item)?;
+    let event_abi: EthersEvent = serde_json::from_str(abi_item)?;
 
     // Use topics directly from the ethers Log structure
     let topics = event.log.topics.clone();

@@ -7,10 +7,7 @@ use crate::eth::eth_processor::{EthProcessorImpl, EthEvent, TimeOrBlock};
 use crate::eth::ParsedEthData;
 use crate::log_filter::AddressOrType;
 use crate::processor::HandlerType;
-use crate::{
-    ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter,
-    LogHandlerConfig, Topic,
-};
+use crate::{ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter, LogHandlerConfig, Timestamp, Topic};
 use anyhow;
 use tracing::debug;
 
@@ -185,7 +182,8 @@ impl EthPlugin {
             },
             None => return Err(anyhow::anyhow!("No data provided in DataBinding")),
         };
-
+        let timestamp = eth_log_data.timestamp.unwrap_or_default();
+        
         // Parse all Ethereum data using ethers library
         let parsed_data = ParsedEthData::from(eth_log_data);
 
@@ -225,10 +223,13 @@ impl EthPlugin {
                     crate::eth::context::EthContext::with_state_collector(state_collector);
                 
                 // Extract metadata from all available parsed data sources
-                let metadata = parsed_data.extract_metadata(
+                let mut metadata = parsed_data.extract_metadata(
                     data.chain_id.clone(),
                     processor.name().to_string()
                 );
+                metadata.timestamp = Timestamp::from(timestamp);
+                
+
 
                 let runtime_ctx = RUNTIME_CONTEXT.get();
 

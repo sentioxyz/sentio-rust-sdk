@@ -1,10 +1,11 @@
 //! Core types for the entity framework
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use bigdecimal::BigDecimal as BigDecimalImpl;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
+use crate::common;
 
 /// Entity ID type - can be String, i64, or UUID
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -111,6 +112,12 @@ impl Timestamp {
 impl From<DateTime<Utc>> for Timestamp {
     fn from(datetime: DateTime<Utc>) -> Self {
         Self(datetime)
+    }
+}
+
+impl From<prost_types::Timestamp> for Timestamp {
+    fn from(value: prost_types::Timestamp) -> Self {
+        Self::from_timestamp(value.seconds, value.nanos as u32).unwrap_or_default()
     }
 }
 

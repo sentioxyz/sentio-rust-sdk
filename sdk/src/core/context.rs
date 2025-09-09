@@ -1,4 +1,4 @@
-use crate::{processor::TimeseriesResult, ProcessStreamResponseV3, Store};
+use crate::{processor::TimeseriesResult, ProcessStreamResponseV3, Store, Timestamp};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ pub struct MetaData {
     pub contract_name: String,
     pub chain_id: String,
     pub block_number: u64,
-    pub block_timestamp: Option<u64>,
+    pub timestamp: Timestamp,
     pub transaction_hash: String,
     pub transaction_index: i32,
     pub log_index: i32,
@@ -181,7 +181,7 @@ impl RuntimeContext {
             contract_name: String::new(),
             chain_id: String::new(),
             block_number: 0,
-            block_timestamp: None,
+            timestamp: Timestamp::default(),
             transaction_hash: String::new(),
             transaction_index: 0,
             log_index: 0,

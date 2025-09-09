@@ -255,7 +255,6 @@ impl TryFrom<&AttributeValue> for RichValue {
 impl TryFrom<&RichValue> for AttributeValue {
     type Error = anyhow::Error;
     fn try_from(rich: &RichValue) -> Result<Self> {
-        use chrono::{DateTime, Utc};
         match &rich.value {
             Some(rich_value::Value::StringValue(s)) => Ok(AttributeValue::String(s.clone())),
             Some(rich_value::Value::FloatValue(f)) => Ok(AttributeValue::Number(*f)),

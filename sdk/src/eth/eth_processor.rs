@@ -1,10 +1,13 @@
 use crate::core::BaseProcessor;
 use crate::eth::{EthEventHandler, EventMarker};
 use crate::{AddressType, EthFetchConfig, EthPlugin};
+use alloy::dyn_abi::{DecodedEvent, DynSolEvent};
+use alloy::json_abi::Event as JsonEvent;
+use alloy::primitives::{LogData, B256};
+use alloy::rpc::types::Log;
+use anyhow::Result;
 use chrono::prelude::*;
 use derive_builder::Builder;
-use ethers::abi::Log as DecodedLog;
-use ethers::types::Log;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -70,7 +73,66 @@ pub enum TimeOrBlock {
 #[derive(Clone)]
 pub struct EthEvent {
     pub log: Log,
-    pub decoded_log: Option<DecodedLog>,
+    pub decoded: Option<DecodedEvent>,
+}
+
+impl EthEvent {
+    /// Decode the log using an ABI string and populate decoded_log field
+    pub fn decode_from_abi_str(&self, abi_str: &str) -> Result<EthEvent> {
+        let decoded_data = self.parse_log_with_alloy(abi_str)?;
+        Ok(EthEvent{
+            log: self.log.clone(),
+            decoded: Some(decoded_data),
+        })
+    }
+
+    /// Internal method to parse log with alloy - adapted from eth-decode-log example
+    fn parse_log_with_alloy(&self, abi_item: &str) -> Result<DecodedEvent> {
+        // Parse the ABI item as a JsonEvent first
+        let json_event: JsonEvent = serde_json::from_str(abi_item)?;
+        
+        // Convert JsonEvent inputs to DynSolTypes for dynamic decoding
+        let mut indexed_params: Vec<alloy::dyn_abi::DynSolType> = Vec::new();
+        let mut non_indexed_params: Vec<alloy::dyn_abi::DynSolType> = Vec::new();
+        
+        for param in &json_event.inputs {
+            let dyn_type = param.ty.to_string().parse::<alloy::dyn_abi::DynSolType>()
+                .map_err(|e| anyhow::anyhow!("Failed to parse type '{}': {}", param.ty, e))?;
+            
+            if param.indexed {
+                indexed_params.push(dyn_type);
+            } else {
+                non_indexed_params.push(dyn_type);
+            }
+        }
+        
+        // Create the body type (tuple of non-indexed parameters)
+        let body_type = if non_indexed_params.is_empty() {
+            alloy::dyn_abi::DynSolType::Tuple(vec![])
+        } else if non_indexed_params.len() == 1 {
+            non_indexed_params.into_iter().next().unwrap()
+        } else {
+            alloy::dyn_abi::DynSolType::Tuple(non_indexed_params)
+        };
+
+        let topics: Vec<B256> = self.log.topics().iter()
+            .map(|topic| B256::from_slice(topic.as_slice()))
+            .collect();
+        
+        // Create DynSolEvent with proper parameters (topic_0, indexed_types, body_type)
+        let dyn_event = DynSolEvent::new_unchecked(
+            topics.first().copied(),
+            indexed_params,
+            body_type
+        );
+
+        let data = self.log.data().data.to_vec();
+        let log_data = LogData::new(topics, data.into())
+            .ok_or_else(|| anyhow::anyhow!("Invalid log data"))?;
+
+        // Decode the log using alloy's dynamic ABI decoding
+        dyn_event.decode_log_data(&log_data).map_err(|e| anyhow::anyhow!("Failed to decode log: {}", e))
+    }
 }
 
 #[derive(Clone)]
@@ -218,7 +280,7 @@ impl EventHandler {
 pub(crate) struct EthProcessorImpl {
     pub(crate) options: EthBindOptions,
     pub(crate) event_handlers: Vec<EventHandler>,
-    pub(crate) processor: Arc<dyn EthProcessor>,
+    pub(crate) _processor: Arc<dyn EthProcessor>,
 }
 
 impl EthProcessorImpl {
@@ -230,7 +292,7 @@ impl EthProcessorImpl {
         Self {
             options,
             event_handlers: Vec::new(),
-            processor,
+            _processor: processor,
         }
     }
 

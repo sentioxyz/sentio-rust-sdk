@@ -1,4 +1,5 @@
-use ethers::types::{Log, Block, Transaction, Address, H256, U256, U64, Bytes, H64, OtherFields};
+use alloy::primitives::{U256};
+use alloy::rpc::types::{Block, Log, Transaction};
 use std::str::FromStr;
 
 /// Utility functions for creating mock blockchain data for testing
@@ -26,6 +27,7 @@ use std::str::FromStr;
 ///     "1000000000000000000" // 1 token (18 decimals)
 /// );
 /// ```
+/// Create a mock ERC20 Transfer log using JSON deserialization for compatibility  
 pub fn mock_transfer_log(
     contract_address: &str,
     from: &str, 
@@ -33,32 +35,33 @@ pub fn mock_transfer_log(
     value: &str
 ) -> Log {
     let transfer_event_signature = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+    let from_padded = format!("0x{:0>64}", from.trim_start_matches("0x"));
+    let to_padded = format!("0x{:0>64}", to.trim_start_matches("0x"));
     
-    Log {
-        address: Address::from_str(contract_address).expect("Invalid contract address"),
-        topics: vec![
-            H256::from_str(transfer_event_signature).expect("Invalid event signature"),
-            H256::from_str(&format!("{:0>64}", from.trim_start_matches("0x"))).expect("Invalid from address"),
-            H256::from_str(&format!("{:0>64}", to.trim_start_matches("0x"))).expect("Invalid to address"),
+    // Convert value to hex-encoded 32-byte data
+    let value_u256 = U256::from_str(value).expect("Invalid value");
+    let value_hex = format!("0x{:064x}", value_u256);
+    
+    let log_json = format!(r#"{{
+        "address": "{}",
+        "topics": [
+            "{}",
+            "{}",
+            "{}"
         ],
-        data: {
-            let value_u256 = U256::from_str(value).expect("Invalid value");
-            let mut bytes = [0u8; 32];
-            value_u256.to_big_endian(&mut bytes);
-            Bytes::from(bytes)
-        },
-        block_hash: Some(H256::from_low_u64_be(12345)),
-        block_number: Some(U64::from(14373295)),
-        transaction_hash: Some(H256::from_low_u64_be(67890)),
-        transaction_index: Some(U64::from(42)),
-        log_index: Some(U256::from(1)),
-        transaction_log_index: Some(U256::from(1)),
-        log_type: None,
-        removed: Some(false),
-    }
+        "data": "{}",
+        "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "blockNumber": "0xdb4c4f",
+        "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "transactionIndex": "0x2a",
+        "logIndex": "0x1",
+        "removed": false
+    }}"#, contract_address, transfer_event_signature, from_padded, to_padded, value_hex);
+    
+    serde_json::from_str(&log_json).expect("Failed to create mock transfer log")
 }
 
-/// Create a mock ERC20 Approval log
+/// Create a mock ERC20 Approval log using JSON deserialization for compatibility
 pub fn mock_approval_log(
     contract_address: &str,
     owner: &str,
@@ -66,94 +69,98 @@ pub fn mock_approval_log(
     value: &str
 ) -> Log {
     let approval_event_signature = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
+    let owner_padded = format!("0x{:0>64}", owner.trim_start_matches("0x"));
+    let spender_padded = format!("0x{:0>64}", spender.trim_start_matches("0x"));
     
-    Log {
-        address: Address::from_str(contract_address).expect("Invalid contract address"),
-        topics: vec![
-            H256::from_str(approval_event_signature).expect("Invalid event signature"),
-            H256::from_str(&format!("{:0>64}", owner.trim_start_matches("0x"))).expect("Invalid owner address"),
-            H256::from_str(&format!("{:0>64}", spender.trim_start_matches("0x"))).expect("Invalid spender address"),
+    // Convert value to hex-encoded 32-byte data
+    let value_u256 = U256::from_str(value).expect("Invalid value");
+    let value_hex = format!("0x{:064x}", value_u256);
+    
+    let log_json = format!(r#"{{
+        "address": "{}",
+        "topics": [
+            "{}",
+            "{}",
+            "{}"
         ],
-        data: {
-            let value_u256 = U256::from_str(value).expect("Invalid value");
-            let mut bytes = [0u8; 32];
-            value_u256.to_big_endian(&mut bytes);
-            Bytes::from(bytes)
-        },
-        block_hash: Some(H256::from_low_u64_be(12345)),
-        block_number: Some(U64::from(14373295)),
-        transaction_hash: Some(H256::from_low_u64_be(67890)),
-        transaction_index: Some(U64::from(42)),
-        log_index: Some(U256::from(2)),
-        transaction_log_index: Some(U256::from(2)),
-        log_type: None,
-        removed: Some(false),
-    }
+        "data": "{}",
+        "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "blockNumber": "0xdb4c4f",
+        "transactionHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "transactionIndex": "0x2a",
+        "logIndex": "0x2",
+        "removed": false
+    }}"#, contract_address, approval_event_signature, owner_padded, spender_padded, value_hex);
+    
+    serde_json::from_str(&log_json).expect("Failed to create mock approval log")
 }
 
 /// Create a mock block for testing
-pub fn mock_block(number: u64, timestamp: u64) -> Block<H256> {
-    Block {
-        number: Some(U64::from(number)),
-        hash: Some(H256::from_low_u64_be(number)),
-        parent_hash: H256::from_low_u64_be(number.saturating_sub(1)),
-        nonce: Some(H64::from_low_u64_be(12345)),
-        uncles_hash: H256::default(),
-        logs_bloom: None,
-        transactions_root: H256::default(),
-        state_root: H256::default(),
-        receipts_root: H256::default(),
-        author: Some(Address::default()),
-        difficulty: U256::from(1000000),
-        total_difficulty: Some(U256::from(number * 1000000)),
-        extra_data: Bytes::default(),
-        size: Some(U256::from(1024)),
-        gas_limit: U256::from(8000000),
-        gas_used: U256::from(4000000),
-        timestamp: U256::from(timestamp),
-        transactions: vec![],
-        uncles: vec![],
-        base_fee_per_gas: Some(U256::from(20_000_000_000u64)), // 20 gwei
-        mix_hash: Some(H256::default()),
-        seal_fields: vec![],
-        blob_gas_used: Some(U256::zero()),
-        excess_blob_gas: Some(U256::zero()),
-        parent_beacon_block_root: None,
-        withdrawals_root: None,
-        withdrawals: None,
-        other: OtherFields::default(),
-    }
+/// Note: This creates a simplified mock using JSON deserialization for compatibility
+pub fn mock_block(number: u64, timestamp: u64) -> Block {
+    let block_json = format!(r#"{{
+        "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "number": "0x{:x}",
+        "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "timestamp": "0x{:x}",
+        "gasLimit": "0x7a1200",
+        "gasUsed": "0x3d0900",
+        "miner": "0x0000000000000000000000000000000000000000",
+        "difficulty": "0xf4240",
+        "totalDifficulty": "0x{:x}",
+        "nonce": "0x0000000000000000",
+        "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "stateRoot": "0xd7f8974fb5ac78d9ac099b9ad5018bedc2ce0a72dad1827a1709da30580f0544",
+        "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "extraData": "0x",
+        "baseFeePerGas": "0x4a817c800",
+        "transactions": [],
+        "uncles": []
+    }}"#, number, timestamp, number * 1000000);
+    
+    serde_json::from_str(&block_json).expect("Failed to create mock block")
 }
 
 /// Create a mock transaction for testing
+/// Note: This creates a simplified mock using JSON deserialization for compatibility
 pub fn mock_transaction(
     from: &str,
     to: Option<&str>,
     value: &str,
     data: Option<&str>
 ) -> Transaction {
-    Transaction {
-        hash: H256::from_low_u64_be(12345),
-        nonce: U256::from(42),
-        block_hash: Some(H256::from_low_u64_be(67890)),
-        block_number: Some(U64::from(14373295)),
-        transaction_index: Some(U64::from(1)),
-        from: Address::from_str(from).expect("Invalid from address"),
-        to: to.map(|addr| Address::from_str(addr).expect("Invalid to address")),
-        value: U256::from_str(value).expect("Invalid value"),
-        gas_price: Some(U256::from(20_000_000_000u64)), // 20 gwei
-        gas: U256::from(21000),
-        input: data.map(|d| Bytes::from_str(d).expect("Invalid data")).unwrap_or_default(),
-        v: U64::from(27),
-        r: U256::from(1),
-        s: U256::from(1),
-        transaction_type: Some(U64::from(0)), // Legacy transaction
-        access_list: None,
-        max_fee_per_gas: None,
-        max_priority_fee_per_gas: None,
-        chain_id: Some(U256::from(1)), // Ethereum mainnet
-        other: OtherFields::default(),
-    }
+    let to_field = match to {
+        Some(addr) => format!(r#""to": "{}","#, addr),
+        None => "".to_string(),
+    };
+    
+    let data_field = match data {
+        Some(d) => d.to_string(),
+        None => "0x".to_string(),
+    };
+    
+    let tx_json = format!(r#"{{
+        "hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "nonce": "0x2a",
+        "blockHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "blockNumber": "0xdb4c4f",
+        "transactionIndex": "0x1",
+        "from": "{}",
+        {}
+        "value": "{}",
+        "gasPrice": "0x4a817c800",
+        "gas": "0x5208",
+        "input": "{}",
+        "chainId": "0x1",
+        "type": "0x0",
+        "v": "0x1b",
+        "r": "0x1",
+        "s": "0x1"
+    }}"#, from, to_field, value, data_field);
+    
+    serde_json::from_str(&tx_json).expect("Failed to create mock transaction")
 }
 
 /// Common chain IDs for testing
@@ -198,18 +205,18 @@ mod tests {
             "1000000000000000000"
         );
         
-        assert_eq!(log.address, Address::from_str(addresses::TEST_CONTRACT).unwrap());
-        assert_eq!(log.topics.len(), 3);
-        assert!(log.block_number.is_some());
+        assert_eq!(log.address(), &Address::from_str(addresses::TEST_CONTRACT).unwrap());
+        assert_eq!(log.topics().len(), 3);
+        assert!(log.block_number().is_some());
     }
 
     #[test]
     fn test_mock_block() {
         let block = mock_block(123456, 1640995200); // Jan 1, 2022 timestamp
         
-        assert_eq!(block.number, Some(U64::from(123456)));
-        assert_eq!(block.timestamp, U256::from(1640995200));
-        assert!(block.hash.is_some());
+        assert_eq!(block.header.number, Some(123456));
+        assert_eq!(block.header.timestamp, 1640995200);
+        assert!(block.header.hash.is_some());
     }
     
     #[test]

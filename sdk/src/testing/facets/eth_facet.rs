@@ -2,7 +2,8 @@ use crate::core::AttributeValue;
 use crate::eth::EthHandlerType;
 use crate::{data, Data};
 use crate::{DataBinding, HandlerType};
-use ethers::types::{Address, Block, Log, Transaction, H256};
+use alloy::primitives::Address;
+use alloy::rpc::types::{Block, Log, Transaction};
 use prost_types;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -106,7 +107,7 @@ impl EthTestFacet {
                 }
                 
                 // Check if address matches (convert to lowercase for comparison)
-                let log_address = format!("{:?}", log.address).to_lowercase();
+                let log_address = format!("{:?}", log.address()).to_lowercase();
                 let contract_address = contract.address.to_lowercase();
                 
                 if log_address != contract_address && contract_address != "*" {
@@ -119,12 +120,12 @@ impl EthTestFacet {
                         // Check if topics match
                         let mut topic_match = true;
                         for (topic_idx, filter_topic) in filter.topics.iter().enumerate() {
-                            if topic_idx >= log.topics.len() {
+                            if topic_idx >= log.topics().len() {
                                 topic_match = false;
                                 break;
                             }
                             
-                            let log_topic = format!("{:?}", log.topics[topic_idx]).to_lowercase();
+                            let log_topic = format!("{:?}", log.topics()[topic_idx]).to_lowercase();
                             
                             // If filter topic has no hashes, it matches all
                             if filter_topic.hashes.is_empty() {
@@ -158,12 +159,12 @@ impl EthTestFacet {
     }
 
     /// Test a single block
-    pub async fn test_block(&self, block: Block<H256>, chain_id: Option<u64>) -> TestResult {
+    pub async fn test_block(&self, block: Block, chain_id: Option<u64>) -> TestResult {
         self.test_blocks(vec![block], chain_id).await
     }
 
     /// Test multiple blocks
-    pub async fn test_blocks(&self, _blocks: Vec<Block<H256>>, chain_id: Option<u64>) -> TestResult {
+    pub async fn test_blocks(&self, _blocks: Vec<Block>, chain_id: Option<u64>) -> TestResult {
         let _chain_id = chain_id.unwrap_or(1);
         
         // TODO: Similar to test_logs but for block events

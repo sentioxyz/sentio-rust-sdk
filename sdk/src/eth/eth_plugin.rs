@@ -206,7 +206,7 @@ impl EthPlugin {
             if let Some(ref log) = parsed_data.log {
                 let event = EthEvent {
                     log: log.clone(),
-                    decoded_log: None,
+                    decoded: None,
                 };
 
                 // TODO: Implement log decoding if needed

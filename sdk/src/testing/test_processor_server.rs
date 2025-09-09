@@ -113,7 +113,7 @@ impl TestProcessorServer {
             .unwrap_or_default();
 
         // Get the metric type from the `type` field
-        let metric_type = TimeseriesType::from_i32(ts_result.r#type)
+        let metric_type = TimeseriesType::try_from(ts_result.r#type)
             .unwrap_or(TimeseriesType::Counter);
 
         // Extract value from data field (which is a RichStruct)

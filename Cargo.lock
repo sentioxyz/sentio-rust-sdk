@@ -5444,6 +5444,7 @@ name = "sentio-sdk"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "alloy",
  "anyhow",
  "async-promise",
  "async-trait",
@@ -5455,10 +5456,10 @@ dependencies = [
  "convert_case",
  "dashmap",
  "derive_builder",
- "ethers",
  "faster-hex",
  "futures",
  "graphql-parser",
+ "hex",
  "num-bigint",
  "pprof",
  "prost",

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 /// Core trait that all entities must implement
+#[async_trait]
 pub trait Entity:
     Clone + Debug + Send + Sync + 'static + Sized + serde::Serialize + for<'de> serde::Deserialize<'de>
 {

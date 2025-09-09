@@ -1,14 +1,10 @@
 //! Test processor for Ethereum event handling
-//! 
+//!
 //! This module provides a sample processor that demonstrates how to use
 //! the Ethereum event handlers and can be used for testing the framework.
+ 
 
-use crate::eth::eth_processor::*;
-use crate::eth::{EthEventHandler, EventMarker};
-use crate::eth::context::EthContext;
-use crate::core::Context;
-use crate::async_trait;
-
+#[cfg(test)]
 /// Sample ERC20 processor for testing event handlers
 #[derive(Clone)]
 pub struct TestErc20Processor {
@@ -17,6 +13,7 @@ pub struct TestErc20Processor {
     name: String,
 }
 
+#[cfg(test)]
 impl TestErc20Processor {
     pub fn new(contract_address: &str, name: &str) -> Self {
         Self {
@@ -25,31 +22,35 @@ impl TestErc20Processor {
             name: name.to_string(),
         }
     }
-    
+
     pub fn with_chain_id(mut self, chain_id: &str) -> Self {
         self.chain_id = chain_id.to_string();
         self
     }
 }
 
+#[cfg(test)]
 impl EthProcessor for TestErc20Processor {
     fn address(&self) -> &str {
         &self.address
     }
-    
+
     fn chain_id(&self) -> &str {
         &self.chain_id
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
 }
 
-// Define event marker types for different ERC20 events
+
+#[cfg(test)]
 pub struct TransferEvent;
+#[cfg(test)]
 pub struct ApprovalEvent;
 
+#[cfg(test)]
 impl EventMarker for TransferEvent {
     fn filter() -> Vec<EventFilter> {
         vec![EventFilter {
@@ -61,6 +62,7 @@ impl EventMarker for TransferEvent {
     }
 }
 
+#[cfg(test)]
 impl EventMarker for ApprovalEvent {
     fn filter() -> Vec<EventFilter> {
         vec![EventFilter {
@@ -72,34 +74,35 @@ impl EventMarker for ApprovalEvent {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl EthEventHandler<TransferEvent> for TestErc20Processor {
     async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
-        println!("🔄 Processing TRANSFER event from contract: {:?} on chain: {}", 
-            event.log.address, ctx.chain_id());
-        
+        println!("🔄 Processing TRANSFER event from contract: {:?} on chain: {}",
+            event.log.address(), ctx.chain_id());
+
         println!("Transfer event details - Block: {:?}, Transaction: {:?}, Log Index: {:?}",
             event.log.block_number,
             event.log.transaction_hash,
             event.log.log_index
         );
-        
+
         // Extract transfer data from topics and data
         // topics[0] = event signature (already filtered)
         // topics[1] = from address (indexed)
         // topics[2] = to address (indexed)
         // data = value (not indexed)
-        
-        if event.log.topics.len() >= 3 {
-            let from = event.log.topics[1];
-            let to = event.log.topics[2];
-            
+
+        if event.log.topics().len() >= 3 {
+            let from = event.log.topics()[1];
+            let to = event.log.topics()[2];
+
             println!("Transfer: {:?} -> {:?}", from, to);
-            
+
             // Emit actual metrics and event logs for testing
             ctx.base_context().counter("transfers").add(1.0, None).await.ok();
             ctx.base_context().gauge("transfer_volume").record(1000.0, None).await.ok(); // Mock value
-            
+
             // Emit event log with attributes
             use crate::core::event_logger::{Event, AttributeValue};
             let event = Event::name("transfer")
@@ -108,40 +111,41 @@ impl EthEventHandler<TransferEvent> for TestErc20Processor {
                 .attr("value", AttributeValue::Number(1000.0));
             ctx.base_context().event_logger().emit(&event).await.ok();
         }
-        
+
         ctx.set_config_updated(true);
         println!("Transfer event processing completed!");
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl EthEventHandler<ApprovalEvent> for TestErc20Processor {
     async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
-        println!("✅ Processing APPROVAL event from contract: {:?} on chain: {}", 
-            event.log.address, ctx.chain_id());
-        
+        println!("✅ Processing APPROVAL event from contract: {:?} on chain: {}",
+            event.log.address(), ctx.chain_id());
+
         println!("Approval event details - Block: {:?}, Transaction: {:?}, Log Index: {:?}",
             event.log.block_number,
             event.log.transaction_hash,
             event.log.log_index
         );
-        
+
         // Extract approval data from topics and data
         // topics[0] = event signature (already filtered)
         // topics[1] = owner address (indexed)
         // topics[2] = spender address (indexed)
         // data = value (not indexed)
-        
-        if event.log.topics.len() >= 3 {
-            let owner = event.log.topics[1];
-            let spender = event.log.topics[2];
-            
+
+        if event.log.topics().len() >= 3 {
+            let owner = event.log.topics()[1];
+            let spender = event.log.topics()[2];
+
             println!("Approval: {:?} -> {:?}", owner, spender);
-            
+
             // Emit actual metrics and event logs for testing
             ctx.base_context().counter("approvals").add(1.0, None).await.ok();
             ctx.base_context().gauge("approval_amount").record(500.0, None).await.ok(); // Mock value
-            
+
             // Emit event log with attributes
             use crate::core::event_logger::{Event, AttributeValue};
             let event = Event::name("approval")
@@ -150,7 +154,7 @@ impl EthEventHandler<ApprovalEvent> for TestErc20Processor {
                 .attr("value", AttributeValue::Number(500.0));
             ctx.base_context().event_logger().emit(&event).await.ok();
         }
-        
+
         ctx.set_config_updated(true);
         println!("Approval event processing completed!");
     }
@@ -160,8 +164,8 @@ impl EthEventHandler<ApprovalEvent> for TestErc20Processor {
 mod tests {
     use super::*;
     use crate::testing::addresses;
-    
-    
+
+
 
     #[tokio::test]
     async fn test_processor_creation() {

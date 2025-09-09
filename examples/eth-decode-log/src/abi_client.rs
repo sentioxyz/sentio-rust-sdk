@@ -36,12 +36,11 @@ impl AbiClient {
         data: Option<&str>,
     ) -> Result<Option<String>> {
         // Check cache first (only if no topics/data for broader caching)
-        if topics.is_none() && data.is_none() {
-            if let Some(cached) = self.cache.get(signature) {
+        if topics.is_none() && data.is_none()
+            && let Some(cached) = self.cache.get(signature) {
                 debug!("Cache hit for signature: {}", signature);
                 return Ok(Some(cached));
             }
-        }
 
         debug!("Fetching ABI for signature: {}", signature);
 

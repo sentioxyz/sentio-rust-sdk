@@ -70,6 +70,10 @@ pub trait Context: Send + Sync {
         self.metadata().transaction_index
     }
 
+    fn timestamp(&self) -> Timestamp {
+        self.metadata().timestamp
+    }
+
     fn log_index(&self) -> i32 {
         self.metadata().log_index
     }

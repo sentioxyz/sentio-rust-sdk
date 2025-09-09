@@ -13,9 +13,7 @@ pub struct GenerationOptions {
     pub output_dir: PathBuf,
     /// Module name for generated entities
     pub module_name: String,
-    /// Whether to generate store implementations
-    pub generate_store: bool,
-    /// Whether to overwrite existing files
+      /// Whether to overwrite existing files
     pub overwrite: bool,
 }
 
@@ -24,8 +22,7 @@ impl Default for GenerationOptions {
         Self {
             output_dir: PathBuf::from("src/generated"),
             module_name: "entities".to_string(),
-            generate_store: true,
-            overwrite: true,
+             overwrite: true,
         }
     }
 }
@@ -48,7 +45,7 @@ impl EntityGenerator {
             parser: SchemaParser::new(),
             validator: SchemaValidator::new(),
             entity_generator: EntityCodeGenerator::new(),
-         }
+        }
     }
 
     /// Generate code from a schema file
@@ -65,7 +62,7 @@ impl EntityGenerator {
         let validation = self.validator.validate(&schema)?;
         if !validation.is_valid() {
             return Err(anyhow::anyhow!(
-                "Schema validation failed with {} errors", 
+                "Schema validation failed with {} errors",
                 validation.errors.len()
             ));
         }
@@ -86,7 +83,7 @@ impl EntityGenerator {
         let validation = self.validator.validate(&schema)?;
         if !validation.is_valid() {
             return Err(anyhow::anyhow!(
-                "Schema validation failed with {} errors", 
+                "Schema validation failed with {} errors",
                 validation.errors.len()
             ));
         }
@@ -112,7 +109,7 @@ impl EntityGenerator {
         for (entity_name, entity_type) in &schema.entities {
             let entity_code = self.entity_generator.generate_entity(entity_type, &schema)?;
             let entity_file_path = options.output_dir.join(format!("{}.rs", entity_name.to_lowercase()));
-            
+
             if options.overwrite || !entity_file_path.exists() {
                 fs::write(&entity_file_path, entity_code)
                     .with_context(|| format!("Failed to write entity file: {}", entity_file_path.display()))?;
@@ -123,22 +120,11 @@ impl EntityGenerator {
         // Generate module file
         let module_code = self.generate_module_file(&schema, &options)?;
         let module_path = options.output_dir.join("mod.rs");
-        
+
         if options.overwrite || !module_path.exists() {
             fs::write(&module_path, module_code)
                 .with_context(|| format!("Failed to write module file: {}", module_path.display()))?;
             result.generated_files.push(module_path);
-        }
-
-        // Optionally generate a store.rs that re-exports SDK store types
-        if options.generate_store {
-            let store_path = options.output_dir.join("store.rs");
-            if options.overwrite || !store_path.exists() {
-                let store_code = self.generate_store_file()?;
-                fs::write(&store_path, store_code)
-                    .with_context(|| format!("Failed to write store file: {}", store_path.display()))?;
-                result.generated_files.push(store_path);
-            }
         }
 
 
@@ -149,10 +135,10 @@ impl EntityGenerator {
     /// Generate the module file that re-exports all entities
     fn generate_module_file(&self, schema: &EntitySchema, options: &GenerationOptions) -> Result<String> {
         let mut code = String::new();
-        
+
         code.push_str("//! Generated entities module\n\n");
         code.push_str("// This file is auto-generated. Do not edit manually.\n\n");
-        
+
         // Import dependencies
         code.push_str("use sentio_sdk::entity::{Entity, EntityId, ID, BigDecimal, Timestamp, Bytes};\n");
         code.push_str("use serde::{Serialize, Deserialize};\n\n");
@@ -163,20 +149,7 @@ impl EntityGenerator {
             code.push_str(&format!("pub use {}::{};\n", entity_name.to_lowercase(), entity_name));
         }
 
-        if options.generate_store {
-            code.push_str("\npub mod store;\n");
-            code.push_str("pub use store::*;\n");
-        }
 
-        Ok(code)
-    }
-
-    /// Generate the store helpers module that re-exports SDK store types
-    fn generate_store_file(&self) -> Result<String> {
-        let mut code = String::new();
-        code.push_str("//! Generated store helpers\n\n");
-        code.push_str("// This file is auto-generated. Do not edit manually.\n\n");
-        code.push_str("pub use sentio_sdk::entity::store::{Store, StoreContext};\n");
         Ok(code)
     }
 }
@@ -240,7 +213,6 @@ mod tests {
         let options = GenerationOptions {
             output_dir: temp_dir.path().to_path_buf(),
             module_name: "test_entities".to_string(),
-            generate_store: false,
             overwrite: true,
         };
 
@@ -276,7 +248,6 @@ mod tests {
         let options = GenerationOptions {
             output_dir: temp_dir.path().to_path_buf(),
             module_name: "test_entities".to_string(),
-            generate_store: true,
             overwrite: true,
         };
 
@@ -284,6 +255,6 @@ mod tests {
         let result = generator.process_schema_string(schema, options).await.unwrap();
 
         assert_eq!(result.entity_count, 2);
-        assert!(result.generated_files.len() >= 4); // 2 entity files + mod.rs + store.rs
+        assert!(result.generated_files.len() >= 3); // 2 entity files + mod.rs
     }
 }

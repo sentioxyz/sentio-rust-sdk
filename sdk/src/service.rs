@@ -37,6 +37,30 @@ impl ProcessorService {
             });
         });
     }
+
+    /// Set the global GraphQL schema that should be returned in get_config
+    pub fn set_gql_schema<S: Into<String>>(&self, schema: S) {
+        self.plugin_manager.set_gql_schema(schema);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processor::ProcessConfigRequest;
+
+    #[tokio::test]
+    async fn get_config_includes_db_schema_when_set() {
+        let service = ProcessorService::new();
+        let schema = "type TestEntity @entity { id: ID! }";
+        service.set_gql_schema(schema);
+
+        let req = Request::new(ProcessConfigRequest {});
+        let resp = service.get_config(req).await.unwrap().into_inner();
+
+        let db_schema = resp.db_schema.expect("expected db_schema to be set");
+        assert!(db_schema.gql_schema.contains("TestEntity"));
+    }
 }
 
 #[tonic::async_trait]
@@ -67,7 +91,7 @@ impl ProcessorV3 for ProcessorService {
         // Configure for all chains/processors
         self.plugin_manager.configure_all_plugins(&mut handler_config);
 
-        let response = ProcessConfigResponse {
+        let mut response = ProcessConfigResponse {
             config: None,
             execution_config: Some(crate::processor::ExecutionConfig {
                 sequential: false,
@@ -87,6 +111,11 @@ impl ProcessorV3 for ProcessorService {
             event_log_configs: vec![],
             db_schema: None,
         };
+
+        // Attach global GraphQL schema if set on plugin manager
+        if let Some(schema) = self.plugin_manager.get_gql_schema() {
+            response.db_schema = Some(crate::processor::DataBaseSchema { gql_schema: schema });
+        }
 
         info!("get_config assembled {} contract configs", response.contract_configs.len());
         Ok(Response::new(response))

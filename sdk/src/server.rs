@@ -56,6 +56,11 @@ impl Server {
         self.service.register_processor::<T, P>(processor);
     }
 
+    /// Set the global GraphQL schema that the server will advertise in get_config
+    pub fn set_gql_schema(&self, schema: &'static str) {
+        self.service.set_gql_schema(schema);
+    }
+
     /// Initialize logging based on debug flag
     /// Gracefully handles cases where a global subscriber is already initialized
     fn init_logging(debug: bool) {

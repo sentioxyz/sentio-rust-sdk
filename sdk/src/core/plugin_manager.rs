@@ -2,10 +2,12 @@ use crate::core::plugin::FullPlugin;
 use crate::core::{RuntimeContext, RUNTIME_CONTEXT};
 use crate::{DataBinding, ProcessResult};
 use dashmap::DashMap;
+use std::sync::RwLock;
 
 pub struct PluginManager {
     pub(crate) plugins: DashMap<String, Box<dyn FullPlugin>>,
     pub(crate) handler_type_owner: DashMap<crate::processor::HandlerType, String>,
+    pub(crate) gql_schema: RwLock<Option<String>>,
 }
 
 impl PluginManager {
@@ -121,6 +123,8 @@ impl PluginManager {
                 );
             }
         }
+
+
     }
 
     /// Get names of all plugins that can handle a specific handler type
@@ -133,6 +137,17 @@ impl PluginManager {
             .filter(|entry| entry.value().can_handle_type(handler_type))
             .map(|entry| entry.key().clone())
             .collect()
+    }
+
+    /// Set the global GraphQL schema to be returned in ProcessConfigResponse
+    pub fn set_gql_schema<S: Into<String>>(&self, schema: S) {
+        let mut guard = self.gql_schema.write().unwrap();
+        *guard = Some(schema.into());
+    }
+
+    /// Get the global GraphQL schema if set
+    pub fn get_gql_schema(&self) -> Option<String> {
+        self.gql_schema.read().unwrap().clone()
     }
 
     pub async fn process(
@@ -163,6 +178,7 @@ impl Default for PluginManager {
         Self {
             plugins: DashMap::new(),
             handler_type_owner: DashMap::new(),
+            gql_schema: RwLock::new(None),
         }
     }
 }

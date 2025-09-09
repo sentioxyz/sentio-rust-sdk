@@ -72,17 +72,23 @@ impl Codegen {
 
         if !results.is_empty() {
             // generate a mod.rs
-            let mut lib_rs = PathBuf::from(dst_dir);
-            lib_rs.push("mod.rs");
-            let mut lib_rs_file = std::fs::File::create(lib_rs)?;
+            let mut mod_rs_path = PathBuf::from(dst_dir);
+            mod_rs_path.push("mod.rs");
+            let mut mod_rs = std::fs::File::create(mod_rs_path)?;
             for result in &results {
                 for file in &result.files_generated {
                     let file_name = file.file_name().unwrap().to_str().unwrap();
-                    let mod_name = file_name.split(".").next().unwrap();
-                    lib_rs_file.write_all(format!("pub mod {};\n", mod_name).as_bytes())?;
+                    let mod_name = file_name.split('.').next().unwrap();
+                    mod_rs.write_all(format!("pub mod {};\n", mod_name).as_bytes())?;
                 }
             }
-            lib_rs_file.write_all(b"\n")?;
+            // If a schema.graphql exists under src, expose it as a static const for the app
+            let schema_path = src_dir.join("schema.graphql");
+            if schema_path.exists() {
+                mod_rs.write_all(b"\n")?;
+                mod_rs.write_all(b"pub const GQL_SCHEMA: &str = include_str!(\"../../schema.graphql\");\n")?;
+            }
+            mod_rs.write_all(b"\n")?;
         }
         
         Ok(results)

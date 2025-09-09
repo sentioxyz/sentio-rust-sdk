@@ -1,10 +1,8 @@
 use anyhow::Result;
-use lru::LruCache;
+use moka::sync::Cache;
 use reqwest::Client;
 use serde::Deserialize;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, error};
 
 #[derive(Debug, Deserialize)]
@@ -17,7 +15,7 @@ pub struct AbiClient {
     client: Client,
     base_url: String,
     chain_id: String,
-    cache: Arc<RwLock<LruCache<String, String>>>,
+    cache: Arc<Cache<String, String>>,
 }
 
 impl AbiClient {
@@ -26,7 +24,7 @@ impl AbiClient {
             client: Client::new(),
             base_url: format!("{}/api/v1/solidity/signature", sentio_host),
             chain_id,
-            cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(100000).unwrap()))),
+            cache: Arc::new(Cache::new(100_000)),
         }
     }
 
@@ -39,10 +37,9 @@ impl AbiClient {
     ) -> Result<Option<String>> {
         // Check cache first (only if no topics/data for broader caching)
         if topics.is_none() && data.is_none() {
-            let cache = self.cache.read().await;
-            if let Some(cached) = cache.peek(signature) {
+            if let Some(cached) = self.cache.get(signature) {
                 debug!("Cache hit for signature: {}", signature);
-                return Ok(Some(cached.clone()));
+                return Ok(Some(cached));
             }
         }
 
@@ -97,8 +94,7 @@ impl AbiClient {
         if let Some(abi_item) = api_response.abi_item {
             // Cache the result (only if no topics/data)
             if topics.is_none() && data.is_none() {
-                let mut cache = self.cache.write().await;
-                cache.put(signature.to_string(), abi_item.clone());
+                self.cache.insert(signature.to_string(), abi_item.clone());
             }
             Ok(Some(abi_item))
         } else {

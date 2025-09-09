@@ -4,13 +4,13 @@
 //! and Rust types without using JSON as an intermediate format. It supports GraphQL
 //! scalar types, Vec, and struct types for efficient data conversion.
 
-use crate::common::{RichStruct, RichValue, RichValueList, rich_value};
+use crate::common::{rich_value, RichStruct, RichValue, RichValueList};
 use crate::core::conversions::{
     bigdecimal_to_proto, bigint_to_proto, proto_to_bigdecimal, proto_to_bigint,
 };
-use crate::entity::types::{BigDecimal, BigInt, Bytes, ID, Timestamp};
+use crate::entity::types::{BigDecimal, BigInt, Bytes, Timestamp, ID};
 use anyhow::Result;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
@@ -77,9 +77,9 @@ pub fn from_rich_value_direct<T: FromRichValue>(rich_value: &RichValue) -> Resul
     T::from_rich_value(rich_value)
 }
 
-/// Convert struct with fields to RichStruct manually
+/// Convert struct with fields to RichStruct manually with pre-allocated capacity
 pub fn struct_to_rich_struct(fields: Vec<(String, RichValue)>) -> RichStruct {
-    let mut field_map = HashMap::new();
+    let mut field_map = HashMap::with_capacity(fields.len()); // Pre-allocate for better performance
     for (key, value) in fields {
         field_map.insert(key, value);
     }
@@ -854,6 +854,10 @@ impl RichSeqSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
     }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self { values: Vec::with_capacity(capacity) }
+    }
 }
 
 impl serde::ser::SerializeSeq for RichSeqSerializer {
@@ -898,6 +902,10 @@ impl RichValueSeqSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
     }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self { values: Vec::with_capacity(capacity) }
+    }
 }
 
 impl serde::ser::SerializeSeq for RichValueSeqSerializer {
@@ -938,6 +946,10 @@ impl Default for RichTupleSerializer {
 impl RichTupleSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
+    }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self { values: Vec::with_capacity(capacity) }
     }
 }
 
@@ -982,6 +994,10 @@ impl Default for RichValueTupleSerializer {
 impl RichValueTupleSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
+    }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self { values: Vec::with_capacity(capacity) }
     }
 }
 
@@ -1202,6 +1218,13 @@ impl RichMapSerializer {
             current_key: None,
         }
     }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            fields: HashMap::with_capacity(capacity),
+            current_key: None,
+        }
+    }
 }
 
 impl serde::ser::SerializeMap for RichMapSerializer {
@@ -1261,6 +1284,13 @@ impl RichValueMapSerializer {
     pub fn new() -> Self {
         Self {
             fields: HashMap::new(),
+            current_key: None,
+        }
+    }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            fields: HashMap::with_capacity(capacity),
             current_key: None,
         }
     }
@@ -1328,6 +1358,12 @@ impl RichStructSerializerImpl {
             fields: HashMap::new(),
         }
     }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            fields: HashMap::with_capacity(capacity),
+        }
+    }
 }
 
 impl serde::ser::SerializeStruct for RichStructSerializerImpl {
@@ -1369,6 +1405,12 @@ impl RichValueStructSerializer {
     pub fn new() -> Self {
         Self {
             fields: HashMap::new(),
+        }
+    }
+    
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            fields: HashMap::with_capacity(capacity),
         }
     }
 }
@@ -2342,8 +2384,6 @@ mod tests {
 
     #[test]
     fn test_timestamp_conversion() {
-        use chrono::{DateTime, Utc};
-        
         // Create a test timestamp
         let original_timestamp = Timestamp::from_timestamp(1672531200, 123456789)
             .expect("Valid timestamp");

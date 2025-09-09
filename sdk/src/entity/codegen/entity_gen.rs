@@ -388,29 +388,6 @@ impl EntityCodeGenerator {
         }
     }
 
-    /// Convert FieldType to Rust type string with proper Optional handling for relations
-    fn field_type_to_rust_with_optional(
-        &self,
-        field_type: &FieldType,
-        schema: &EntitySchema,
-    ) -> Result<String> {
-        match field_type {
-            FieldType::Scalar(scalar) => Ok(format!("Option<{}>", scalar.rust_type())),
-            FieldType::Object(type_name) => {
-                if schema.is_entity(type_name) {
-                    Ok(format!("Option<{}>", type_name))
-                } else {
-                    Ok(format!("Option<UnknownType<{}>>", type_name))
-                }
-            }
-            FieldType::NonNull(inner) => self.field_type_to_rust(inner, schema, false),
-            FieldType::List(inner) => {
-                let inner_type = self.field_type_to_rust(inner, schema, false)?;
-                Ok(format!("Vec<{}>", inner_type))
-            }
-        }
-    }
-
     /// Generate all entities in a single entities.rs file
     fn generate_all_entities(&self, schema: &EntitySchema) -> Result<String> {
         let mut content = String::new();

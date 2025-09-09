@@ -1,6 +1,8 @@
 use std::env;
 use anyhow::anyhow;
-use ethers::abi::{Event as EthersEvent, ParamType, RawLog, Token};
+use alloy::json_abi::Event as JsonEvent;
+use alloy::dyn_abi::{DynSolEvent, DynSolValue};
+use alloy::primitives::{LogData, B256};
 use tracing::{debug, info, warn};
 use sentio_sdk::{async_trait, Entity};
 use sentio_sdk::core::{Context, Event};
@@ -83,7 +85,7 @@ impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
                     .block_hash("".to_string())
                     .log_index(ctx.log_index())
                     .log_address(format!("{:?}", event.log.address))
-                    .data(format!("{:?}", event.log.data))
+                    .data( event.log.data.0)
                     .topics(event
                         .log
                         .topics
@@ -169,7 +171,7 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
         .await?
     {
         Some(abi_item) => {
-            match parse_log_with_ethers(&abi_item, event) {
+            match parse_log_with_alloy(&abi_item, event) {
                 Ok(decoded) => Ok(Some(decoded)),
                 Err(e) => {
                     if e.to_string().contains("data out-of-bounds")
@@ -193,7 +195,7 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
                             .await?
                         {
                             Some(abi_item) => {
-                                let decoded = parse_log_with_ethers(&abi_item, event)?;
+                                let decoded = parse_log_with_alloy(&abi_item, event)?;
                                 Ok(Some(decoded))
                             }
                             None => Err(anyhow!(
@@ -211,37 +213,90 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
     }
 }
 
-fn parse_log_with_ethers(abi_item: &str, event: &EthEvent) -> anyhow::Result<DecodedLogResult> {
-    // Parse the ABI item as an Event
-    let event_abi: EthersEvent = serde_json::from_str(abi_item)?;
+fn parse_log_with_alloy(abi_item: &str, event: &EthEvent) -> anyhow::Result<DecodedLogResult> {
+    // Parse the ABI item as a JsonEvent first
+    let json_event: JsonEvent = serde_json::from_str(abi_item)?;
+    
+    // Convert JsonEvent inputs to DynSolTypes for dynamic decoding
+    let mut indexed_params: Vec<alloy::dyn_abi::DynSolType> = Vec::new();
+    let mut non_indexed_params: Vec<alloy::dyn_abi::DynSolType> = Vec::new();
+    
+    for param in &json_event.inputs {
+        let dyn_type = param.ty.to_string().parse::<alloy::dyn_abi::DynSolType>()
+            .map_err(|e| anyhow::anyhow!("Failed to parse type '{}': {}", param.ty, e))?;
+        
+        if param.indexed {
+            indexed_params.push(dyn_type);
+        } else {
+            non_indexed_params.push(dyn_type);
+        }
+    }
+    
+    // Create the body type (tuple of non-indexed parameters)
+    let body_type = if non_indexed_params.is_empty() {
+        alloy::dyn_abi::DynSolType::Tuple(vec![])
+    } else if non_indexed_params.len() == 1 {
+        non_indexed_params.into_iter().next().unwrap()
+    } else {
+        alloy::dyn_abi::DynSolType::Tuple(non_indexed_params)
+    };
 
-    // Use topics directly from the ethers Log structure
-    let topics = event.log.topics.clone();
+    let topics: Vec<B256> = event.log.topics.iter()
+        .map(|topic| B256::from_slice(topic.as_bytes()))
+        .collect();
 
-    // Use data directly from the ethers Log structure
+    // Create DynSolEvent with proper parameters (topic_0, indexed_types, body_type)
+    let dyn_event = DynSolEvent::new_unchecked(
+        topics.first().copied(),
+        indexed_params,
+        body_type
+    );
+
+    // Convert ethers log data to alloy format
+
+
     let data = event.log.data.to_vec();
+    let log_data = LogData::new(topics, data.into())
+        .ok_or_else(|| anyhow::anyhow!("Invalid log data"))?;
 
-    // Create RawLog for ethers
-    let raw_log = RawLog { topics, data };
-
-    // Decode the log using ethers
-    let decoded = event_abi.parse_log(raw_log)?;
+    // Decode the log using alloy's dynamic ABI decoding
+    let decoded = dyn_event.decode_log_data(&log_data)?;
 
     // Extract information
-    let event_name = event_abi.name.clone();
-    let signature = format!("{:?}", event.log.topics[0]); // Use the original signature from topics
+    let event_name = json_event.name.clone();
+    let signature = format!("{:?}", event.log.topics[0]);
 
     let mut arg_key_mappings = Vec::new();
     let mut arg_types = Vec::new();
     let mut args_map = std::collections::HashMap::new();
 
-    for (i, param) in event_abi.inputs.iter().enumerate() {
-        arg_key_mappings.push(param.name.clone());
-        arg_types.push(format_param_type(&param.kind));
+    // Process parameters from both indexed and non-indexed data
+    for (i, input) in json_event.inputs.iter().enumerate() {
+        let param_name = input.name.clone();
+        let param_type = input.ty.to_string();
+        
+        arg_key_mappings.push(param_name.clone());
+        arg_types.push(param_type);
 
-        if let Some(value) = decoded.params.get(i) {
-            args_map.insert(param.name.clone(), format_token(&value.value));
-        }
+        // Get decoded value from alloy's DecodedEvent structure
+        // The DecodedEvent has 'indexed' and 'body' fields containing the decoded values
+        let value_str = if input.indexed {
+            // For indexed parameters, access from the indexed field
+            if let Some(indexed_value) = decoded.indexed.get(i) {
+                format_dyn_sol_value(indexed_value)
+            } else {
+                "[indexed value not found]".to_string()
+            }
+        } else {
+            // For non-indexed parameters, access from the body field
+            if let Some(body_value) = decoded.body.get(i) {
+                format_dyn_sol_value(body_value)
+            } else {
+                "[body value not found]".to_string()
+            }
+        };
+        
+        args_map.insert(param_name, value_str);
     }
 
     let args = serde_json::to_string(&args_map)?;
@@ -255,38 +310,30 @@ fn parse_log_with_ethers(abi_item: &str, event: &EthEvent) -> anyhow::Result<Dec
     })
 }
 
-fn format_param_type(param_type: &ParamType) -> String {
-    match param_type {
-        ParamType::Address => "address".to_string(),
-        ParamType::Bytes => "bytes".to_string(),
-        ParamType::Int(size) => format!("int{}", size),
-        ParamType::Uint(size) => format!("uint{}", size),
-        ParamType::Bool => "bool".to_string(),
-        ParamType::String => "string".to_string(),
-        ParamType::Array(inner) => format!("{}[]", format_param_type(inner)),
-        ParamType::FixedBytes(size) => format!("bytes{}", size),
-        ParamType::FixedArray(inner, size) => format!("{}[{}]", format_param_type(inner), size),
-        ParamType::Tuple(types) => {
-            let type_strs: Vec<String> = types.iter().map(format_param_type).collect();
-            format!("({})", type_strs.join(","))
-        }
-    }
-}
+// This function is no longer needed as we extract type info directly from JsonEvent
 
-fn format_token(token: &Token) -> String {
-    match token {
-        Token::Address(addr) => format!("0x{:x}", addr),
-        Token::FixedBytes(bytes) | Token::Bytes(bytes) => format!("0x{}", hex::encode(bytes)),
-        Token::Int(val) | Token::Uint(val) => val.to_string(),
-        Token::Bool(val) => val.to_string(),
-        Token::String(val) => val.clone(),
-        Token::Array(tokens) | Token::FixedArray(tokens) => {
-            let formatted: Vec<String> = tokens.iter().map(format_token).collect();
+fn format_dyn_sol_value(value: &DynSolValue) -> String {
+    match value {
+        DynSolValue::Address(addr) => format!("0x{:x}", addr),
+        DynSolValue::Bool(b) => b.to_string(),
+        DynSolValue::Bytes(bytes) => format!("0x{}", hex::encode(bytes)),
+        DynSolValue::FixedBytes(bytes, _) => format!("0x{}", hex::encode(bytes)),
+        DynSolValue::Int(val, _) => val.to_string(),
+        DynSolValue::Uint(val, _) => val.to_string(),
+        DynSolValue::String(s) => s.clone(),
+        DynSolValue::Array(arr) => {
+            let formatted: Vec<String> = arr.iter().map(format_dyn_sol_value).collect();
             format!("[{}]", formatted.join(","))
         }
-        Token::Tuple(tokens) => {
-            let formatted: Vec<String> = tokens.iter().map(format_token).collect();
+        DynSolValue::FixedArray(arr) => {
+            let formatted: Vec<String> = arr.iter().map(format_dyn_sol_value).collect();
+            format!("[{}]", formatted.join(","))
+        }
+        DynSolValue::Tuple(tuple) => {
+            let formatted: Vec<String> = tuple.iter().map(format_dyn_sol_value).collect();
             format!("({})", formatted.join(","))
         }
+        // Handle any additional variants
+        _ => "[unsupported type]".to_string(),
     }
 }

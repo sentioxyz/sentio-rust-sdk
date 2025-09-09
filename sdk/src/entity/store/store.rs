@@ -119,15 +119,22 @@ impl<B: StorageBackend> EntityStore for StoreImpl<B> {
     where
         T: serde::Serialize,
     {
-         let tables = vec![T::NAME.to_string(); entities.len()];
-        let ids = entities
-            .iter()
-            .map(|entity| entity.id().as_string())
-            .collect::<Vec<_>>();
-        let data = entities
-            .iter()
-            .map(|entity| T::to_rich_struct(entity))
-            .collect::<Result<Vec<_>>>()?;
+        if entities.is_empty() {
+            return Ok(());
+        }
+        
+        // Pre-allocate all vectors with exact capacity for better performance
+        let len = entities.len();
+        let tables = vec![T::NAME.to_string(); len];
+        
+        let mut ids = Vec::with_capacity(len);
+        let mut data = Vec::with_capacity(len);
+        
+        // Process entities and collect results
+        for entity in entities {
+            ids.push(entity.id().as_string());
+            data.push(T::to_rich_struct(entity)?);
+        }
 
         self.backend.upsert(tables, ids, data).await
     }

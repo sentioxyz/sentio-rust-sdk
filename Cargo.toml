@@ -17,3 +17,20 @@ homepage = "https://sentio.xyz"
 documentation = "https://docs.sentio.xyz"
 keywords = ["blockchain", "web3", "ethereum", "analytics", "processor"]
 categories = ["development-tools", "web-programming"]
+
+# Performance-optimized build profiles
+[profile.release]
+opt-level = 3           # Maximum optimization
+lto = "fat"            # Link-time optimization for better performance
+codegen-units = 1      # Single codegen unit for better optimization
+panic = "abort"        # Smaller binary, faster panic handling
+strip = true           # Remove debug symbols for smaller binaries
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true           # Keep debug symbols for production debugging
+strip = false
+
+# Fast compilation profile for development with optimized dependencies
+[profile.dev.package."*"]
+opt-level = 2          # Optimize dependencies even in debug mode for better dev experience

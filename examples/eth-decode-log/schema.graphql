@@ -9,7 +9,7 @@ type DecodedLog @entity(immutable: true) {
     blockHash: String!
     logIndex: Int!
     logAddress: String!
-    data: String!
+    data: Bytes!
     topics: [String!]!
     args: String @dbType(type: "json")
     argKeyMappings: [String!]!

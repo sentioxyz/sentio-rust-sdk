@@ -133,7 +133,7 @@ impl EntityGenerator {
     }
 
     /// Generate the module file that re-exports all entities
-    fn generate_module_file(&self, schema: &EntitySchema, options: &GenerationOptions) -> Result<String> {
+    fn generate_module_file(&self, schema: &EntitySchema, _options: &GenerationOptions) -> Result<String> {
         let mut code = String::new();
 
         code.push_str("//! Generated entities module\n\n");

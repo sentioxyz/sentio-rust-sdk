@@ -45,8 +45,21 @@ async-promise = "0.1.0"
 convert_case = "0.8.0"
 num-bigint = { version = "0.4", features = ["serde"] }
 
+# Performance optimizations
+smallvec = { version = "1.11", features = ["serde"] }
+faster-hex = "0.8"
+ahash = "0.8"
+
+# Profiling and monitoring
+pprof = { version = "0.13", features = ["flamegraph"], optional = true }
+axum = { version = "0.7", optional = true }
+
 [build-dependencies]
 tonic-prost-build = "0.14.1"
 
 [dev-dependencies]
 tempfile = "3.12"
+
+[features]
+default = []
+profiling = ["pprof", "axum",]

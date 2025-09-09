@@ -2,6 +2,7 @@ use crate::processor::processor_v3_server::ProcessorV3Server as TonicProcessorV3
 use crate::service::ProcessorService;
 use anyhow::Result;
 use clap::Parser;
+use std::future::Future;
 use std::net::SocketAddr;
 use tonic::transport::Server as TonicServer;
 use tracing::{debug, error, info};
@@ -22,6 +23,11 @@ pub struct ServerArgs {
     /// Host address to bind to
     #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
+
+    /// Port for profiling HTTP server
+    #[cfg(feature = "profiling")]
+    #[arg(long, default_value = "4040")]
+    pub profiling_port: u16,
 
     /// Additional unrecognized arguments
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -109,17 +115,32 @@ impl Server {
 
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
 
-        info!("Starting Sentio Processor server on {}", addr);
+        info!("🚀 Starting Sentio Processor server on {}", addr);
         debug!("Server configuration: {:?}", args);
-        info!("gRPC compression enabled: gzip");
+        info!("📊 gRPC compression enabled: gzip");
         // Note: We can't easily get processor count here without blocking on async lock
         // This will be logged during init() call instead
-        info!("Starting server with plugin manager initialized");
-        info!("gRPC compression enabled: gzip");
+        info!("🔧 Starting server with plugin manager initialized");
+
+        #[cfg(feature = "profiling")]
+        info!("🔥 Profiling enabled on port {}", args.profiling_port);
 
         // Create and block on the Tokio runtime
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
+            // Start profiling server if enabled
+            #[cfg(feature = "profiling")]
+            {
+                let profiler =
+                    crate::core::profiling::Profiler::new().with_http_endpoint(args.profiling_port);
+
+                tokio::spawn(async move {
+                    if let Err(e) = profiler.start_http_server().await {
+                        tracing::error!("Failed to start profiling server: {}", e);
+                    }
+                });
+            }
+
             TonicServer::builder()
                 .add_service(
                     TonicProcessorV3Server::new(self.service.clone())
@@ -150,7 +171,7 @@ impl Server {
     /// Internal method for shutdown support that returns Result for error handling
     fn try_start_with_shutdown<F>(self, shutdown_signal: F) -> Result<()>
     where
-        F: std::future::Future<Output = ()> + Send + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
         // Parse command line arguments or use provided args
         let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
@@ -161,15 +182,31 @@ impl Server {
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
 
         info!(
-            "Starting Sentio Processor server on {} with shutdown support",
+            "🚀 Starting Sentio Processor server on {} with shutdown support",
             addr
         );
         debug!("Server configuration: {:?}", args);
-        info!("gRPC compression enabled: gzip");
+        info!("📊 gRPC compression enabled: gzip");
+
+        #[cfg(feature = "profiling")]
+        info!("🔥 Profiling enabled on port {}", args.profiling_port);
 
         // Create and block on the Tokio runtime
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
+            // Start profiling server if enabled
+            #[cfg(feature = "profiling")]
+            {
+                let profiler =
+                    crate::core::profiling::Profiler::new().with_http_endpoint(args.profiling_port);
+
+                tokio::spawn(async move {
+                    if let Err(e) = profiler.start_http_server().await {
+                        tracing::error!("Failed to start profiling server: {}", e);
+                    }
+                });
+            }
+
             TonicServer::builder()
                 .add_service(
                     TonicProcessorV3Server::new(self.service.clone())
@@ -195,9 +232,27 @@ impl Server {
 
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
 
-        info!("Starting Sentio Processor server on {}", addr);
+        info!("🚀 Starting Sentio Processor server on {}", addr);
         debug!("Server configuration: {:?}", args);
-        info!("gRPC compression enabled: gzip");
+        info!("📊 gRPC compression enabled: gzip");
+
+        #[cfg(feature = "profiling")]
+        {
+            info!("🔥 Profiling enabled on port {}", args.profiling_port);
+        }
+
+        // Start profiling server if enabled
+        #[cfg(feature = "profiling")]
+        {
+            let profiler =
+                crate::core::profiling::Profiler::new().with_http_endpoint(args.profiling_port);
+
+            tokio::spawn(async move {
+                if let Err(e) = profiler.start_http_server().await {
+                    tracing::error!("Failed to start profiling server: {}", e);
+                }
+            });
+        }
 
         TonicServer::builder()
             .add_service(
@@ -216,7 +271,7 @@ impl Server {
     /// Returns Result for manual error handling (unlike the blocking start methods)
     pub async fn start_async_with_shutdown<F>(self, shutdown_signal: F) -> Result<()>
     where
-        F: std::future::Future<Output = ()>,
+        F: Future<Output = ()>,
     {
         // Parse command line arguments or use provided args
         let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
@@ -227,11 +282,29 @@ impl Server {
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
 
         info!(
-            "Starting Sentio Processor server on {} with shutdown support",
+            "🚀 Starting Sentio Processor server on {} with shutdown support",
             addr
         );
         debug!("Server configuration: {:?}", args);
-        info!("gRPC compression enabled: gzip");
+        info!("📊 gRPC compression enabled: gzip");
+
+        #[cfg(feature = "profiling")]
+        {
+            info!("🔥 Profiling enabled on port {}", args.profiling_port);
+        }
+
+        // Start profiling server if enabled
+        #[cfg(feature = "profiling")]
+        {
+            let profiler =
+                crate::core::profiling::Profiler::new().with_http_endpoint(args.profiling_port);
+
+            tokio::spawn(async move {
+                if let Err(e) = profiler.start_http_server().await {
+                    tracing::error!("Failed to start profiling server: {}", e);
+                }
+            });
+        }
 
         TonicServer::builder()
             .add_service(

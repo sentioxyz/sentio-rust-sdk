@@ -25,6 +25,9 @@ enum Commands {
         /// Skip project validation before building
         #[arg(long)]
         no_validate: bool,
+        /// Force cross-compilation
+        #[arg(long)]
+        cross: Option<bool>,
         /// Target architecture for cross-compilation
         #[arg(long)]
         target: Option<String>,
@@ -176,10 +179,17 @@ async fn main() -> Result<()> {
     let cli = parse_args();
 
     match cli.command {
-        Commands::Build { path, no_validate, target, optimization, features, verbose } => {
+        Commands::Build { path, no_validate, cross, target, optimization, features, verbose } => {
+
+            #[cfg(target_os = "windows")]
+            let use_cross = cross.unwrap_or(true);
+            #[cfg(not(target_os = "windows"))]
+            let use_cross = cross.unwrap_or(false);
+
             let command = build::BuildCommand {
                 path,
                 skip_validation: no_validate,
+                cross: use_cross,
                 target,
                 optimization_level: optimization,
                 features,

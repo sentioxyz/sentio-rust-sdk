@@ -258,6 +258,7 @@ impl UploadCommand {
             optimization_level: Some("release".to_string()),
             features: Vec::new(),
             verbose: false,
+            cross: false
         };
 
         build_cmd.execute().await

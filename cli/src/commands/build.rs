@@ -11,6 +11,7 @@ use tokio::process::Command as TokioCommand;
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
     pub skip_validation: bool,
+    pub cross: bool,
     pub target: String,
     pub optimization_level: String,
     pub features: Vec<String>,
@@ -21,6 +22,7 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             skip_validation: false,
+            cross: false,
             target: "x86_64-unknown-linux-musl".to_string(),
             optimization_level: "release".to_string(),
             features: vec![],
@@ -77,30 +79,137 @@ impl CrossCompiler {
         Ok(())
     }
 
-    /// Determine if we should use cross instead of cargo for compilation
-    fn should_use_cross(&self) -> bool {
-        let current_arch = std::env::consts::ARCH;
-        let current_os = std::env::consts::OS;
+    async fn cmd_exists(cmd: &str) -> bool {
+        let status = TokioCommand::new("bash")
+            .arg("-lc")
+            .arg(format!("command -v {} >/dev/null 2>&1", cmd))
+            .status()
+            .await
+            .ok();
+        matches!(status, Some(s) if s.success())
+    }
 
-        // Parse target triple
-        let target_parts: Vec<&str> = self.target.split('-').collect();
-        if target_parts.len() < 3 {
-            return false; // Invalid target format, use cargo
+    /// On macOS build locally using x86_64-linux-musl-gcc when not forcing cross
+    async fn compile_local_musl_macos(
+        &self,
+        project_path: &Path,
+        options: &BuildOptions,
+    ) -> Result<()> {
+        // Check musl toolchain
+        if !Self::cmd_exists("x86_64-linux-musl-gcc").await {
+            println!("Missing tool: x86_64-linux-musl-gcc");
+            println!("brew install FiloSottile/musl-cross/musl-cross");
+            return Err(anyhow!(
+                "Required tool x86_64-linux-musl-gcc not found in PATH"
+            ));
         }
 
-        let target_arch = target_parts[0];
-        let target_os = if self.target.contains("linux") {
-            "linux"
-        } else if self.target.contains("darwin") || self.target.contains("apple") {
-            "macos"
-        } else if self.target.contains("windows") {
-            "windows"
-        } else {
-            return false; // Unknown OS, use cargo
-        };
+        // Build with cargo using TARGET_CC
+        let mut cmd = TokioCommand::new("cargo");
+        cmd.env("TARGET_CC", "x86_64-linux-musl-gcc")
+            .arg("build")
+            .arg("--target")
+            .arg(&self.target)
+            .current_dir(project_path);
 
-        // Use cross if architecture or OS differs
-        target_arch != current_arch || target_os != current_os
+        if options.optimization_level == "release" {
+            cmd.arg("--release");
+        }
+        if !options.features.is_empty() {
+            cmd.arg("--features").arg(options.features.join(","));
+        }
+        if options.verbose {
+            cmd.arg("--verbose");
+        }
+
+        println!(
+            "Compiling locally for target {} using x86_64-linux-musl-gcc",
+            self.target
+        );
+        let status = cmd.status().await.context("Failed to execute cargo build")?;
+        if !status.success() {
+            return Err(anyhow!("Build failed"));
+        }
+        Ok(())
+    }
+
+    async fn compile_with_cargo(
+        &self,
+        project_path: &Path,
+        options: &BuildOptions,
+    ) -> Result<()> {
+        self.ensure_target_installed().await?;
+
+        let mut cmd = TokioCommand::new("cargo");
+        cmd.arg("build")
+            .arg("--target")
+            .arg(&self.target)
+            .current_dir(project_path);
+
+        if options.optimization_level == "release" {
+            cmd.arg("--release");
+        }
+        if !options.features.is_empty() {
+            cmd.arg("--features").arg(options.features.join(","));
+        }
+        if options.verbose {
+            cmd.arg("--verbose");
+        }
+
+        println!("Compiling for target: {} (cargo)", self.target);
+        let status = cmd
+            .status()
+            .await
+            .context("Failed to execute cargo build")?;
+        if !status.success() {
+            return Err(anyhow!("Build failed"));
+        }
+        Ok(())
+    }
+
+    async fn compile_with_cross(
+        &self,
+        project_path: &Path,
+        options: &BuildOptions,
+    ) -> Result<()> {
+        self.ensure_target_installed().await?;
+
+        println!("Using cross for cross-compilation");
+        let mut cmd = TokioCommand::new("cross");
+        cmd.arg("build")
+            .arg("--target")
+            .arg(&self.target)
+            .current_dir(project_path);
+
+        // Ensure Cross.toml is configured for protoc
+        let mut cross_toml_path = self
+            .ensure_cross_toml_configured(project_path, options.verbose)
+            .await?;
+        cross_toml_path = cross_toml_path.canonicalize()?;
+        cmd.env("CROSS_CONFIG", &cross_toml_path);
+        if options.verbose {
+            println!("Set CROSS_CONFIG to: {}", cross_toml_path.display());
+        }
+
+        if options.optimization_level == "release" {
+            cmd.arg("--release");
+        }
+        if !options.features.is_empty() {
+            cmd.arg("--features").arg(options.features.join(","));
+        }
+        if options.verbose {
+            cmd.arg("--verbose");
+        }
+
+        println!("Compiling for target: {} (cross)", self.target);
+        let status = cmd
+            .status()
+            .await
+            .context("Failed to execute cross build")?;
+        if !status.success() {
+            return Err(anyhow!("Build failed"));
+        }
+        Ok(())
     }
 
     /// Ensure Cross.toml is configured with protoc installation
@@ -179,64 +288,45 @@ pre-build = [
 
     /// Compile the project for the target
     pub async fn compile(&self, project_path: &Path, options: &BuildOptions) -> Result<PathBuf> {
-        self.ensure_target_installed().await?;
-
-        // Determine if we need cross-compilation
-        let use_cross = self.should_use_cross();
-
-        let mut cmd = if use_cross {
-            println!("Using cross for cross-compilation");
-            TokioCommand::new("cross")
-        } else {
-            TokioCommand::new("cargo")
-        };
-
-        cmd.arg("build")
-            .arg("--target")
-            .arg(&self.target)
-            .current_dir(project_path);
-
-        // If using cross, ensure Cross.toml is configured for protoc
-        if use_cross {
-            let mut cross_toml_path = self
-                .ensure_cross_toml_configured(project_path, options.verbose)
-                .await?;
-            cross_toml_path = cross_toml_path.canonicalize()?;
-            // Set CROSS_CONFIG environment variable to point to the Cross.toml file
-            cmd.env("CROSS_CONFIG", &cross_toml_path);
-            if options.verbose {
-                println!("Set CROSS_CONFIG to: {}", cross_toml_path.display());
+        // Platform-specific behavior
+        #[cfg(target_os = "macos")]
+        {
+            let target_is_musl = self.target == "x86_64-unknown-linux-musl";
+            if target_is_musl && !options.cross {
+                // Local MUSL build via TARGET_CC
+                self.ensure_target_installed().await?;
+                self.compile_local_musl_macos(project_path, options).await?;
+            } else {
+                // Use cross when --cross set or non-musl target
+                self.compile_with_cross(project_path, options).await?;
             }
+            return self.locate_binary(project_path, options).await;
         }
 
-        // Add optimization level
-        if options.optimization_level == "release" {
-            cmd.arg("--release");
+        #[cfg(target_os = "windows")]
+        {
+            // Always use cross on Windows
+            self.compile_with_cross(project_path, options).await?;
+            return self.locate_binary(project_path, options).await;
         }
 
-        // Add features
-        if !options.features.is_empty() {
-            cmd.arg("--features").arg(options.features.join(","));
+        #[cfg(target_os = "linux")]
+        {
+            // On Linux, use cross for MUSL targets, else use cargo
+            if self.target.contains("musl") {
+                self.compile_with_cross(project_path, options).await?;
+            } else {
+                self.compile_with_cargo(project_path, options).await?;
+            }
+            return self.locate_binary(project_path, options).await;
         }
 
-        // Add verbose flag
-        if options.verbose {
-            cmd.arg("--verbose");
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            // Fallback: use cargo
+            self.compile_with_cargo(project_path, options).await?;
+            return self.locate_binary(project_path, options).await;
         }
-
-        println!("Compiling for target: {}", self.target);
-        let build_tool = if use_cross { "cross" } else { "cargo" };
-        let status = cmd
-            .status()
-            .await
-            .context(format!("Failed to execute {} build", build_tool))?;
-
-        if !status.success() {
-            return Err(anyhow!("Build failed"));
-        }
-
-        // Locate the built binary
-        self.locate_binary(project_path, options).await
     }
 
     /// Locate the built binary
@@ -422,6 +512,7 @@ impl std::fmt::Display for BinaryInfo {
 pub struct BuildCommand {
     pub path: String,
     pub skip_validation: bool,
+    pub cross: bool,
     pub target: Option<String>,
     pub optimization_level: Option<String>,
     pub features: Vec<String>,
@@ -434,6 +525,7 @@ impl BuildCommand {
         Self {
             path,
             skip_validation: false,
+            cross: false,
             target: None,
             optimization_level: None,
             features: vec![],
@@ -463,6 +555,7 @@ impl BuildCommand {
         // Create build options from config and command arguments
         let build_options = BuildOptions {
             skip_validation: self.skip_validation,
+            cross: self.cross,
             target: self.target.clone().unwrap_or(config.build.target),
             optimization_level: self
                 .optimization_level
@@ -518,7 +611,7 @@ impl BuildCommand {
             }
         }
 
-        // Perform cross-compilation
+        // Perform compilation
         let compiler = CrossCompiler::new(build_options.target.clone());
         let binary_path = compiler
             .compile(project_path, &build_options)
@@ -710,6 +803,7 @@ build:
             target: "aarch64-unknown-linux-gnu".to_string(),
             optimization_level: "debug".to_string(),
             features: vec!["feature1".to_string(), "feature2".to_string()],
+            cross: false,
             verbose: true,
         };
 

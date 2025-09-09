@@ -17,6 +17,5 @@ fn main()  {
     LogDecoderProcessor::new()
         .configure_event::<AllEventsMarker>(None)
         .bind(&server);
-
     server.start();
 }

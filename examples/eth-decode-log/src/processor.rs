@@ -16,14 +16,22 @@ pub(crate) struct LogDecoderProcessor {
     address: String,
     chain_id: String,
     name: String,
+    abi_client: AbiClient
 }
 
 impl LogDecoderProcessor {
     pub fn new() -> Self {
+        // Initialize ABI client with environment variables
+        let sentio_host = env::var("SENTIO_HOST")
+            .unwrap_or_else(|_| "https://app.sentio.xyz".to_string());
+        let chain_id = env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string());
+        let abi_client = AbiClient::new(sentio_host, chain_id.clone());
+
         Self {
             address: "".to_string(), // Empty means all contracts
             chain_id: env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string()),
             name: "Ethereum Log Decoder".to_string(),
+            abi_client,
         }
     }
 }
@@ -39,17 +47,6 @@ impl EthProcessor for LogDecoderProcessor {
 
     fn name(&self) -> &str {
         &self.name
-    }
-}
-
-// Implement Clone so we can use it in configure_event
-impl Clone for LogDecoderProcessor {
-    fn clone(&self) -> Self {
-        Self {
-            address: self.address.clone(),
-            chain_id: self.chain_id.clone(),
-            name: self.name.clone(),
-        }
     }
 }
 
@@ -73,17 +70,12 @@ impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
 
          let log_id =  format!("{}_{}_{}", ctx.block_number(), ctx.transaction_index(), ctx.log_index());
 
-        // Initialize ABI client with environment variables
-        let sentio_host = env::var("SENTIO_HOST")
-            .unwrap_or_else(|_| "https://app.sentio.xyz".to_string());
-        let chain_id = env::var("CHAIN_ID").unwrap_or_else(|_| "1".to_string());
-        let abi_client = AbiClient::new(sentio_host, chain_id.clone());
 
-        match decode_log(&event, &abi_client).await {
+        match decode_log(&event, &self.abi_client).await {
             Ok(Some(decoded)) => {
                 let decoded_log = DecodedLogBuilder::default()
                     .id(ID::from(log_id.clone()))
-                    .chain_id(chain_id.clone())
+                    .chain_id(ctx_chain_id)
                     .transaction_hash(ctx.transaction_hash())
                     .transaction_index(ctx.transaction_index())
                     .timestamp(Timestamp::from_timestamp_millis(ctx.block_number() as i64 * 15000).unwrap_or_default()) // Approximate timestamp

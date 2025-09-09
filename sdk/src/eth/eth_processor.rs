@@ -88,7 +88,7 @@ pub struct OnEventOption {
 
 /// A configurable Ethereum processor that can register event handlers
 pub struct ConfigurableEthProcessor<P: EthProcessor> {
-    processor: P,
+    processor: Arc<P>,
     event_handlers: Vec<EventHandler>,
 }
 
@@ -96,7 +96,7 @@ impl<P: EthProcessor> ConfigurableEthProcessor<P> {
     /// Create a new configurable processor
     pub fn new(processor: P) -> Self {
         Self {
-            processor,
+            processor: Arc::new(processor),
             event_handlers: Vec::new(),
         }
     }
@@ -104,15 +104,13 @@ impl<P: EthProcessor> ConfigurableEthProcessor<P> {
     /// Configure an event handler for a specific event type
     pub fn configure_event<T: EventMarker>(mut self, options: Option<OnEventOption>) -> Self
     where
-        P: EthEventHandler<T> + Clone,
+        P: EthEventHandler<T> ,
     {
         let filters = T::filter();
 
-        // Create a cloned processor to use as the event handler
-        let handler_processor = self.processor.clone();
-
+        // Use the existing Arc reference instead of cloning
         let type_erased: Arc<dyn TypeErasedEventHandler> =
-            Arc::new((handler_processor, std::marker::PhantomData::<T>));
+            Arc::new((Arc::clone(&self.processor), std::marker::PhantomData::<T>));
 
         let event_handler = EventHandler {
             handler: type_erased,
@@ -127,7 +125,7 @@ impl<P: EthProcessor> ConfigurableEthProcessor<P> {
 
     /// Bind this configured processor to a server
     pub fn bind<S: crate::BindableServer>(self, server: &S) {
-        let processor_arc = Arc::new(self.processor);
+        let processor_arc = self.processor.clone();
         let mut processor_impl = EthProcessorImpl::new(processor_arc);
         processor_impl.event_handlers = self.event_handlers;
 
@@ -152,7 +150,7 @@ pub trait EthProcessor: Send + Sync + 'static {
     ) -> ConfigurableEthProcessor<Self>
     where
         Self: Sized,
-        Self: EthEventHandler<T> + Clone,
+        Self: EthEventHandler<T> ,
     {
         let cfg = ConfigurableEthProcessor::new(self);
         cfg.configure_event::<T>(options)
@@ -187,6 +185,7 @@ where
         T::filter()
     }
 }
+
 
 
 type AsyncEventHandler = Arc<dyn TypeErasedEventHandler>;

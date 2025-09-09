@@ -142,3 +142,15 @@ pub trait EventMarker: Send + Sync + 'static {
 pub trait EthEventHandler<T: EventMarker>: Send + Sync + 'static {
     async fn on_event(&self, event: EthEvent, ctx: EthContext);
 }
+
+// Implementation of EthEventHandler for Arc<H> to avoid cloning requirement
+#[crate::async_trait]
+impl<H, T> EthEventHandler<T> for std::sync::Arc<H>
+where
+    H: EthEventHandler<T>,
+    T: EventMarker,
+{
+    async fn on_event(&self, event: EthEvent, ctx: EthContext) {
+        self.as_ref().on_event(event, ctx).await
+    }
+}

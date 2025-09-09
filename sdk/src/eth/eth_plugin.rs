@@ -87,7 +87,7 @@ impl Plugin for EthPlugin {
                     handler_name: handler.name.clone().unwrap_or("".to_string()),
                 };
 
-                if handler.filters.len() == 0 {
+                if handler.filters.is_empty() {
                     // add empty filter for all events
                     log_config.filters.push(LogFilter::default());
                 } else {

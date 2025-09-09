@@ -89,10 +89,8 @@ impl SchemaValidator {
             if !self.is_int8_non_null(&id_field.field_type) {
                 self.errors.push(format!("Timeseries entity '{}' must have 'id: Int8!' field", entity.name));
             }
-        } else {
-            if !self.is_id_non_null(&id_field.field_type) {
-                self.errors.push(format!("Entity '{}' should have 'id: ID!' field", entity.name));
-            }
+        } else if !self.is_id_non_null(&id_field.field_type) {
+            self.errors.push(format!("Entity '{}' should have 'id: ID!' field", entity.name));
         }
 
         // Timeseries entities must have a timestamp field
@@ -100,13 +98,11 @@ impl SchemaValidator {
             self.errors.push(format!("Timeseries entity '{}' must have a 'timestamp' field", entity.name));
         }
 
-        if entity.is_timeseries() {
-            if let Some(timestamp_field) = entity.fields.get("timestamp") {
-                if !self.is_timestamp_non_null(&timestamp_field.field_type) {
+        if entity.is_timeseries()
+            && let Some(timestamp_field) = entity.fields.get("timestamp")
+                && !self.is_timestamp_non_null(&timestamp_field.field_type) {
                     self.errors.push(format!("Timeseries entity '{}' must have 'timestamp: Timestamp!' field", entity.name));
                 }
-            }
-        }
     }
 
     /// Validate a field definition
@@ -211,8 +207,8 @@ impl SchemaValidator {
         }
 
         // Validate the referenced field exists in the target entity
-        if let Some(target_type_name) = field.base_type().get_object_name() {
-            if let Some(target_entity) = schema.get_entity(target_type_name) {
+        if let Some(target_type_name) = field.base_type().get_object_name()
+            && let Some(target_entity) = schema.get_entity(target_type_name) {
                 if !target_entity.fields.contains_key(from_field) {
                     self.errors.push(format!(
                         "@derivedFrom references non-existent field '{}' in entity '{}'",
@@ -221,17 +217,15 @@ impl SchemaValidator {
                 } else {
                     // Check if the referenced field points back to this entity
                     let referenced_field = &target_entity.fields[from_field];
-                    if let Some(ref_type_name) = referenced_field.base_type().get_object_name() {
-                        if ref_type_name != &entity.name {
+                    if let Some(ref_type_name) = referenced_field.base_type().get_object_name()
+                        && ref_type_name != &entity.name {
                             self.warnings.push(format!(
                                 "@derivedFrom field '{}' references field '{}' in '{}' that doesn't point back to '{}'",
                                 field_name, from_field, target_type_name, entity.name
                             ));
                         }
-                    }
                 }
             }
-        }
     }
 
     /// Validate entity directives
@@ -244,7 +238,7 @@ impl SchemaValidator {
                     has_entity_directive = true;
                     
                     // Validate entity directive arguments
-                    for (arg_name, _arg_value) in &directive.arguments {
+                    for arg_name in directive.arguments.keys() {
                         match arg_name.as_str() {
                             "timeseries" | "immutable" => {
                                 // Valid boolean arguments
@@ -330,7 +324,7 @@ impl SchemaValidator {
 
     /// Detect circular references in entity relationships
     fn detect_circular_references(&mut self, schema: &EntitySchema) {
-        for (entity_name, _entity) in &schema.entities {
+        for entity_name in schema.entities.keys() {
             let mut visited = HashSet::new();
             let mut path = Vec::new();
             
@@ -361,13 +355,11 @@ impl SchemaValidator {
 
         if let Some(entity) = schema.get_entity(entity_name) {
             for field in entity.fields.values() {
-                if let Some(referenced_type) = field.base_type().get_object_name() {
-                    if schema.is_entity(referenced_type) {
-                        if self.has_circular_reference(referenced_type, schema, visited, path) {
+                if let Some(referenced_type) = field.base_type().get_object_name()
+                    && schema.is_entity(referenced_type)
+                        && self.has_circular_reference(referenced_type, schema, visited, path) {
                             return true;
                         }
-                    }
-                }
             }
         }
 

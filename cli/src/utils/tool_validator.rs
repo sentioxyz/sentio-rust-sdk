@@ -15,6 +15,12 @@ pub struct ToolInfo {
     pub description: String,
 }
 
+impl Default for ToolValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolValidator {
     pub fn new() -> Self {
         Self
@@ -155,17 +161,6 @@ impl ToolValidator {
         }
     }
 
-    /// Check if current platform is Linux
-    #[cfg(target_os = "linux")]
-    fn is_current_platform_linux(&self) -> bool {
-        true
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn is_current_platform_linux(&self) -> bool {
-        false
-    }
-
     /// Get platform-specific suggestions for missing tools
     pub fn get_platform_install_suggestions(&self, tool: &str) -> String {
         match tool {
@@ -237,12 +232,6 @@ Linux (Arch):
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_tool_validator_creation() {
-        let validator = ToolValidator::new();
-        // Just test that we can create it
-        assert_eq!(validator.is_current_platform_linux(), std::env::consts::OS == "linux");
-    }
 
     #[test]
     fn test_platform_install_suggestions() {

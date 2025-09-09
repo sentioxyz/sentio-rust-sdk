@@ -49,7 +49,7 @@ impl TestProcessorServer {
         
 
 
-        match self.plugin_manager.process(&data_binding, runtime_context).await {
+        match self.plugin_manager.process(data_binding, runtime_context).await {
             Ok(_process_result) => {
                 // Processing succeeded, collect any messages from the channel
                 while let Ok(msg) = rx.try_recv() {
@@ -100,7 +100,7 @@ impl TestProcessorServer {
     ) {
         let metadata = TestMetadata {
             contract_name: ts_result.metadata.as_ref().map(|m| m.contract_name.clone()),
-            block_number: ts_result.metadata.as_ref().map(|m| m.block_number as u64),
+            block_number: ts_result.metadata.as_ref().map(|m| m.block_number),
             handler_type: EthHandlerType::Event,
         };
 
@@ -165,7 +165,7 @@ impl TestProcessorServer {
     ) {
         let metadata = TestMetadata {
             contract_name: ts_result.metadata.as_ref().map(|m| m.contract_name.clone()),
-            block_number: ts_result.metadata.as_ref().map(|m| m.block_number as u64),
+            block_number: ts_result.metadata.as_ref().map(|m| m.block_number),
             handler_type: EthHandlerType::Event,
         };
 
@@ -175,13 +175,11 @@ impl TestProcessorServer {
             let mut attributes = HashMap::new();
 
             // Extract event name
-            if let Some(name_value) = data.fields.get("event_name") {
-                if let Some(value) = &name_value.value {
-                    if let crate::common::rich_value::Value::StringValue(name) = value {
+            if let Some(name_value) = data.fields.get("event_name")
+                && let Some(value) = &name_value.value
+                    && let crate::common::rich_value::Value::StringValue(name) = value {
                         event_name = name.clone();
                     }
-                }
-            }
 
             // Convert all other fields to JSON values for attributes
             for (key, rich_value) in &data.fields {
@@ -207,6 +205,12 @@ impl TestProcessorServer {
 }
 
 impl TestProcessorServer {
+}
+
+impl Default for TestProcessorServer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestProcessorServer {

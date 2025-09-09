@@ -384,6 +384,12 @@ pub struct QueryBuilder<T: Entity> {
     _phantom: std::marker::PhantomData<T>,
 }
 
+impl<T: Entity> Default for QueryBuilder<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Entity> QueryBuilder<T> {
     /// Create a new query builder
     pub fn new() -> Self {

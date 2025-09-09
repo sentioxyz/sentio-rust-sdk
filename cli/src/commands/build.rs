@@ -44,7 +44,7 @@ impl CrossCompiler {
     /// Check if the target is installed
     pub async fn check_target_installed(&self) -> Result<bool> {
         let output = TokioCommand::new("rustup")
-            .args(&["target", "list", "--installed"])
+            .args(["target", "list", "--installed"])
             .output()
             .await
             .context("Failed to check installed targets")?;
@@ -67,7 +67,7 @@ impl CrossCompiler {
             println!("Installing target: {}", self.target);
 
             let status = TokioCommand::new("rustup")
-                .args(&["target", "add", &self.target])
+                .args(["target", "add", &self.target])
                 .status()
                 .await
                 .context("Failed to install target")?;
@@ -425,15 +425,12 @@ pre-build = [
             .unwrap_or_else(|_| start_path.to_path_buf());
         loop {
             let cargo_toml = current.join("Cargo.toml");
-            if cargo_toml.exists() {
-                if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                    if let Ok(toml_value) = toml::from_str::<toml::Value>(&content) {
-                        if toml_value.get("workspace").is_some() {
+            if cargo_toml.exists()
+                && let Ok(content) = std::fs::read_to_string(&cargo_toml)
+                    && let Ok(toml_value) = toml::from_str::<toml::Value>(&content)
+                        && toml_value.get("workspace").is_some() {
                             return Some(current);
                         }
-                    }
-                }
-            }
 
             if !current.pop() {
                 break;
@@ -500,11 +497,10 @@ pub struct BinaryInfo {
 impl std::fmt::Display for BinaryInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Binary: {} ({} bytes)", self.path.display(), self.size)?;
-        if let Some(modified) = self.modified {
-            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+        if let Some(modified) = self.modified
+            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
                 write!(f, ", modified: {}", duration.as_secs())?;
             }
-        }
         Ok(())
     }
 }

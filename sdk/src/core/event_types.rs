@@ -232,7 +232,7 @@ impl TryFrom<&AttributeValue> for RichValue {
                 value: Some(rich_value::Value::TokenValue(t.clone())),
             },
             AttributeValue::Array(list) => {
-                let values: Result<Vec<_>> = list.iter().map(|v| RichValue::try_from(v)).collect();
+                let values: Result<Vec<_>> = list.iter().map(RichValue::try_from).collect();
                 RichValue {
                     value: Some(rich_value::Value::ListValue(RichValueList {
                         values: values?,
@@ -265,7 +265,7 @@ impl TryFrom<&RichValue> for AttributeValue {
                 let items: Result<Vec<_>> = list
                     .values
                     .iter()
-                    .map(|v| AttributeValue::try_from(v))
+                    .map(AttributeValue::try_from)
                     .collect();
                 Ok(AttributeValue::Array(items?))
             }

@@ -195,7 +195,7 @@ impl ConfigManager {
         let mut config = self
             .project_config
             .clone()
-            .unwrap_or_else(|| SentioConfig::default());
+            .unwrap_or_default();
 
         // Apply environment variable overrides
         if let Ok(target_network) = env::var("SENTIO_TARGET_NETWORK") {
@@ -233,7 +233,7 @@ impl ConfigManager {
         let mut config = self
             .project_config
             .clone()
-            .unwrap_or_else(|| SentioConfig::default());
+            .unwrap_or_default();
 
         updater(&mut config)?;
         config.validate()?;

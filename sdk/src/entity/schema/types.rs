@@ -13,6 +13,12 @@ pub struct EntitySchema {
     pub scalars: HashMap<String, ScalarType>,
 }
 
+impl Default for EntitySchema {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EntitySchema {
     pub fn new() -> Self {
         Self {

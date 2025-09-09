@@ -40,7 +40,7 @@ where
 
     /// Register a new handler and return its unique ID (index in the vector)
     pub fn register(&mut self, chain_id: &str, handler_type: T, processor_idx: usize, handler_idx: usize) -> i32 {
-        let chain_handlers = self.handlers.entry(chain_id.to_string()).or_insert_with(Vec::new);
+        let chain_handlers = self.handlers.entry(chain_id.to_string()).or_default();
         let handle_id = chain_handlers.len() as i32;
         
         let handler_info = HandlerInfo {

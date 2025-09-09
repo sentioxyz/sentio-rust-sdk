@@ -376,6 +376,12 @@ pub struct RichStructSerializer {
     _phantom: std::marker::PhantomData<()>,
 }
 
+impl Default for RichStructSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichStructSerializer {
     pub fn new() -> Self {
         Self {
@@ -633,6 +639,12 @@ pub struct RichValueSerializer {
     _phantom: std::marker::PhantomData<()>,
 }
 
+impl Default for RichValueSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichValueSerializer {
     pub fn new() -> Self {
         Self {
@@ -832,6 +844,12 @@ pub struct RichSeqSerializer {
     values: Vec<RichValue>,
 }
 
+impl Default for RichSeqSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichSeqSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
@@ -870,6 +888,12 @@ pub struct RichValueSeqSerializer {
     values: Vec<RichValue>,
 }
 
+impl Default for RichValueSeqSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichValueSeqSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
@@ -903,6 +927,12 @@ impl serde::ser::SerializeSeq for RichValueSeqSerializer {
 
 pub struct RichTupleSerializer {
     values: Vec<RichValue>,
+}
+
+impl Default for RichTupleSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RichTupleSerializer {
@@ -943,6 +973,12 @@ pub struct RichValueTupleSerializer {
     values: Vec<RichValue>,
 }
 
+impl Default for RichValueTupleSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichValueTupleSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
@@ -976,6 +1012,12 @@ impl serde::ser::SerializeTuple for RichValueTupleSerializer {
 
 pub struct RichTupleStructSerializer {
     values: Vec<RichValue>,
+}
+
+impl Default for RichTupleStructSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RichTupleStructSerializer {
@@ -1014,6 +1056,12 @@ impl serde::ser::SerializeTupleStruct for RichTupleStructSerializer {
 
 pub struct RichValueTupleStructSerializer {
     values: Vec<RichValue>,
+}
+
+impl Default for RichValueTupleStructSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RichValueTupleStructSerializer {
@@ -1099,6 +1147,12 @@ pub struct RichValueTupleVariantSerializer {
     values: Vec<RichValue>,
 }
 
+impl Default for RichValueTupleVariantSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichValueTupleVariantSerializer {
     pub fn new() -> Self {
         Self { values: Vec::new() }
@@ -1133,6 +1187,12 @@ impl serde::ser::SerializeTupleVariant for RichValueTupleVariantSerializer {
 pub struct RichMapSerializer {
     fields: HashMap<String, RichValue>,
     current_key: Option<String>,
+}
+
+impl Default for RichMapSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RichMapSerializer {
@@ -1189,6 +1249,12 @@ impl serde::ser::SerializeMap for RichMapSerializer {
 pub struct RichValueMapSerializer {
     fields: HashMap<String, RichValue>,
     current_key: Option<String>,
+}
+
+impl Default for RichValueMapSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RichValueMapSerializer {
@@ -1250,6 +1316,12 @@ pub struct RichStructSerializerImpl {
     fields: HashMap<String, RichValue>,
 }
 
+impl Default for RichStructSerializerImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichStructSerializerImpl {
     pub fn new() -> Self {
         Self {
@@ -1287,6 +1359,12 @@ pub struct RichValueStructSerializer {
     fields: HashMap<String, RichValue>,
 }
 
+impl Default for RichValueStructSerializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RichValueStructSerializer {
     pub fn new() -> Self {
         Self {
@@ -1321,9 +1399,9 @@ impl serde::ser::SerializeStruct for RichValueStructSerializer {
             
             // Extract seconds and nanos values
             if let (Some(seconds_value), Some(nanos_value)) = 
-                (self.fields.get("seconds"), self.fields.get("nanos")) {
+                (self.fields.get("seconds"), self.fields.get("nanos"))
                 
-                if let (Some(rich_value::Value::Int64Value(seconds)), Some(rich_value::Value::IntValue(nanos))) = 
+                && let (Some(rich_value::Value::Int64Value(seconds)), Some(rich_value::Value::IntValue(nanos))) = 
                     (&seconds_value.value, &nanos_value.value) {
                     
                     // Create protobuf Timestamp
@@ -1336,7 +1414,6 @@ impl serde::ser::SerializeStruct for RichValueStructSerializer {
                         value: Some(rich_value::Value::TimestampValue(prost_timestamp)),
                     });
                 }
-            }
         }
         
         // Default struct serialization

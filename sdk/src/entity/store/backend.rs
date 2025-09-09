@@ -132,7 +132,7 @@ impl StorageBackend for RemoteBackend {
     async fn upsert(&self, table: Vec<String>, id: Vec<String>, data: Vec<crate::common::RichStruct>) -> Result<()> {
         let op = Op::Upsert(DbUpsert {
             entity: table,
-            id: id,
+            id,
             data: vec![],
             entity_data: data,
         });

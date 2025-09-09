@@ -37,6 +37,7 @@ struct ProjectConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct InitUploadResponse {
     pub url: String,
     pub warning: Option<String>,
@@ -45,79 +46,41 @@ struct InitUploadResponse {
     pub project_id: String,
 }
 
-impl Default for InitUploadResponse {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            warning: None,
-            replacing_version: None,
-            multi_version: false,
-            project_id: String::new(),
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct FinishUploadResponse {
     pub project_full_slug: String,
     pub processor_id: String,
     pub version: u32,
 }
 
-impl Default for FinishUploadResponse {
-    fn default() -> Self {
-        Self {
-            project_full_slug: String::new(),
-            processor_id: String::new(),
-            version: 0,
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct ProcessorStatus {
     pub version: u32,
     pub version_state: String,
 }
 
-impl Default for ProcessorStatus {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            version_state: String::new(),
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct ProcessorsResponse {
     pub processors: Vec<ProcessorStatus>,
 }
 
-impl Default for ProcessorsResponse {
-    fn default() -> Self {
-        Self {
-            processors: Vec::new(),
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct UserInfo {
     pub username: String,
 }
 
-impl Default for UserInfo {
-    fn default() -> Self {
-        Self {
-            username: String::new(),
-        }
-    }
-}
 
 #[async_trait]
 impl Command for UploadCommand {
@@ -205,11 +168,10 @@ impl UploadCommand {
         let cargo_toml: toml::Value =
             toml::from_str(&cargo_toml_content).context("Failed to parse Cargo.toml")?;
         
-        if let Some(package) = cargo_toml.get("package") {
-            if let Some(name) = package.get("name").and_then(|n| n.as_str()) {
+        if let Some(package) = cargo_toml.get("package")
+            && let Some(name) = package.get("name").and_then(|n| n.as_str()) {
                 return Ok(name.to_string());
             }
-        }
         
         Err(anyhow!("No package name found in Cargo.toml"))
     }
@@ -350,15 +312,15 @@ impl UploadCommand {
             .await?;
 
         // Handle version replacement confirmation
-        if let Some(replacing_version) = init_response.replacing_version {
-            if self.continue_from.is_none() && !config.silent_overwrite {
+        if let Some(replacing_version) = init_response.replacing_version
+            && self.continue_from.is_none() && !config.silent_overwrite {
                 let version_type = if init_response.multi_version {
                     "pending"
                 } else {
                     "active"
                 };
                 let confirmed = Confirm::new()
-                    .with_prompt(&format!(
+                    .with_prompt(format!(
                         "Create new version and deactivate {} version {}?",
                         version_type, replacing_version
                     ))
@@ -369,13 +331,11 @@ impl UploadCommand {
                     return Ok(());
                 }
             }
-        }
 
-        if let Some(warning) = &init_response.warning {
-            if !warning.is_empty() {
+        if let Some(warning) = &init_response.warning
+            && !warning.is_empty() {
                 println!("⚠️  Warning: {}", warning);
             }
-        }
 
         // Upload the binary to the presigned URL with retry
         self.upload_with_retry(&init_response.url, &binary_data)
@@ -468,7 +428,7 @@ impl UploadCommand {
         if let Some(processor) = found {
             if !config.silent_overwrite {
                 let confirmed = Confirm::new()
-                    .with_prompt(&format!("Continue from version {} (status: {})?", version, processor.version_state))
+                    .with_prompt(format!("Continue from version {} (status: {})?", version, processor.version_state))
                     .interact()?;
 
                 if !confirmed {
@@ -574,7 +534,7 @@ impl UploadCommand {
             true
         } else {
             Confirm::new()
-                .with_prompt(&format!("Project not found for '{}', do you want to create it?", project))
+                .with_prompt(format!("Project not found for '{}', do you want to create it?", project))
                 .interact()?
         };
 

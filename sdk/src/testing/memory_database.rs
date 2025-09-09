@@ -38,7 +38,7 @@ impl MemoryDatabase {
         self.data
             .get(table)
             .map(|table_data| table_data.iter().map(|entry| entry.value().clone()).collect())
-            .unwrap_or_else(Vec::new)
+            .unwrap_or_default()
     }
     
     /// Get a specific entity by ID (for testing purposes)  
@@ -82,14 +82,13 @@ impl Default for MemoryDatabase {
 #[async_trait]
 impl StorageBackend for MemoryDatabase {
     async fn get(&self, table: &str, id: &str) -> Result<Option<db_response::Value>> {
-        if let Some(table_data) = self.data.get(table) {
-            if let Some(entity) = table_data.get(id) {
+        if let Some(table_data) = self.data.get(table)
+            && let Some(entity) = table_data.get(id) {
                 let entity_list = crate::processor::EntityList {
                     entities: vec![entity.value().clone()],
                 };
                 return Ok(Some(db_response::Value::EntityList(entity_list)));
             }
-        }
         
         // Return empty list instead of None to match expected behavior
         Ok(Some(db_response::Value::EntityList(
@@ -151,7 +150,7 @@ impl StorageBackend for MemoryDatabase {
             };
             
             // Insert into the appropriate table
-            let table_map = self.data.entry(table).or_insert_with(DashMap::new);
+            let table_map = self.data.entry(table).or_default();
             table_map.insert(id, entity);
         }
         

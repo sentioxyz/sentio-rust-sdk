@@ -14,6 +14,12 @@ pub struct MyEthProcessor {
     name: String,
  }
 
+impl Default for MyEthProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MyEthProcessor {
     pub fn new() -> Self {
         Self {
@@ -159,8 +165,8 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
 
         // Save entity to store
         ctx.store().upsert(&transfer).await.expect("Failed to save transfer entity");
-        println!("💾 Saved Transfer entity with ID: {}", transfer.id());
-        
+        println!("💾 Saved Transfer entity with ID: {}", transfer.id);
+
         println!("✅ Transfer event processing completed");
      }
 }

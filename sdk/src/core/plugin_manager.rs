@@ -25,14 +25,13 @@ impl PluginManager {
         if !self.plugins.contains_key(name) {
             let temp_plugin = P::default();
             for handler_type in temp_plugin.handler_types() {
-                if self.handler_type_owner.contains_key(handler_type) {
-                    if let Some(existing_owner) = self.handler_type_owner.get(handler_type) {
+                if self.handler_type_owner.contains_key(handler_type)
+                    && let Some(existing_owner) = self.handler_type_owner.get(handler_type) {
                         panic!(
                             "Handler type {:?} already owned by plugin {}",
                             handler_type, existing_owner.value()
                         );
                     }
-                }
                 self.handler_type_owner
                     .insert(*handler_type, name.to_string());
             }

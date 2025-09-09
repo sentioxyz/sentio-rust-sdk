@@ -102,7 +102,7 @@ impl Server {
     /// Internal method that returns Result for error handling
     fn try_start(self) -> Result<()> {
         // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
+        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
 
         // Initialize logging
         Self::init_logging(args.debug);
@@ -153,7 +153,7 @@ impl Server {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
+        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
 
         // Initialize logging
         Self::init_logging(args.debug);
@@ -188,7 +188,7 @@ impl Server {
     /// Returns Result for manual error handling (unlike the blocking start() method)
     pub async fn start_async(self) -> Result<()> {
         // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
+        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
 
         // Initialize logging
         Self::init_logging(args.debug);
@@ -219,7 +219,7 @@ impl Server {
         F: std::future::Future<Output = ()>,
     {
         // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(|| ServerArgs::parse());
+        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
 
         // Initialize logging
         Self::init_logging(args.debug);

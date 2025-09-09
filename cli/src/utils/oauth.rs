@@ -16,6 +16,12 @@ pub struct PkceChallenge {
     pub challenge: String,
 }
 
+impl Default for PkceChallenge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PkceChallenge {
     pub fn new() -> Self {
         let mut bytes = [0u8; 32];
@@ -50,18 +56,12 @@ impl Default for TokenResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct UserResponse {
     #[serde(rename = "emailVerified")]
     pub email_verified: bool,
 }
 
-impl Default for UserResponse {
-    fn default() -> Self {
-        Self {
-            email_verified: false,
-        }
-    }
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateApiKeyRequest {
@@ -72,19 +72,12 @@ pub struct CreateApiKeyRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct CreateApiKeyResponse {
     pub key: String,
     pub username: String,
 }
 
-impl Default for CreateApiKeyResponse {
-    fn default() -> Self {
-        Self {
-            key: String::new(),
-            username: String::new(),
-        }
-    }
-}
 
 /// OAuth2 login server
 pub struct OAuthServer {
@@ -168,12 +161,11 @@ impl OAuthServer {
                 return Err(anyhow!("OAuth callback timeout after {} seconds", CALLBACK_TIMEOUT.as_secs()));
             }
 
-            if let Ok(mut res) = result.lock() {
-                if let Some(callback_result) = res.take() {
+            if let Ok(mut res) = result.lock()
+                && let Some(callback_result) = res.take() {
                     server_handle.abort();
                     return callback_result;
                 }
-            }
 
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -326,9 +318,9 @@ pub fn build_authorization_url(host: &str, challenge: &str) -> Result<String> {
     let redirect_uri = auth_config.redirect_uri;
 
     let mut url = format!("{}/authorize?", auth_config.domain);
-    url.push_str(&format!("response_type=code&"));
+    url.push_str("response_type=code&");
     url.push_str(&format!("code_challenge={}&", challenge));
-    url.push_str(&format!("code_challenge_method=S256&"));
+    url.push_str("code_challenge_method=S256&");
     url.push_str(&format!("client_id={}&", auth_config.client_id));
     url.push_str(&format!("redirect_uri={}&", urlencoding::encode(&redirect_uri)));
     url.push_str(&format!("audience={}&", urlencoding::encode(&auth_config.audience)));

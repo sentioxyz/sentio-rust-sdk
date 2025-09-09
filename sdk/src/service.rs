@@ -18,6 +18,12 @@ pub struct ProcessorService {
     pub plugin_manager: Arc<PluginManager>,
 }
 
+impl Default for ProcessorService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcessorService {
     pub fn new() -> Self {
         Self { plugin_manager: Arc::new(PluginManager::default()) }

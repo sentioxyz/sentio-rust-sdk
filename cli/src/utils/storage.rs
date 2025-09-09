@@ -27,6 +27,12 @@ pub struct CredentialStore {
     config_file: PathBuf,
 }
 
+impl Default for CredentialStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CredentialStore {
     pub fn new() -> Self {
         let home_dir = dirs::home_dir().expect("Unable to get home directory");

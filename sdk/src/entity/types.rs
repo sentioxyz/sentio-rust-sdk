@@ -1,11 +1,10 @@
 //! Core types for the entity framework
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use bigdecimal::BigDecimal as BigDecimalImpl;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
-use crate::common;
 
 /// Entity ID type - can be String, i64, or UUID
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

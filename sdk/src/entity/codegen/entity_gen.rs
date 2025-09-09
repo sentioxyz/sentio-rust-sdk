@@ -63,12 +63,11 @@ impl EntityCodeGenerator {
 
         // Add imports for direct relation fields too
         for (_, field) in entity.get_relation_fields() {
-            if !field.has_directive("derivedFrom") {
-                if let Some(target_type) = field.base_type().get_object_name() {
+            if !field.has_directive("derivedFrom")
+                && let Some(target_type) = field.base_type().get_object_name() {
                     // Import the referenced entity type from the entities module
                     scope.import("crate::entities", target_type);
                 }
-            }
         }
         
         scope.raw(""); // Empty line after imports
@@ -106,8 +105,8 @@ impl EntityCodeGenerator {
             }
 
             // Special handling for direct relation fields
-            if field.is_relation() {
-                if let Some(_target_type) = field.base_type().get_object_name() {
+            if field.is_relation()
+                && let Some(_target_type) = field.base_type().get_object_name() {
                     let base_name = self.to_snake_case(field_name);
                     let is_list = field.field_type.is_list();
                     let is_optional = field.field_type.is_optional();
@@ -148,7 +147,6 @@ impl EntityCodeGenerator {
                     struct_field.doc("Relation field");
                     continue;
                 }
-            }
 
             // Non-relation fields fall back to regular processing
             let field_type = self.field_type_to_rust(&field.field_type, schema, field_name == "id")?;
@@ -260,10 +258,10 @@ impl EntityCodeGenerator {
                 if let Some(derived_field) = derived_directive.get_string_arg("field") {
                     if is_list {
                         // Many relations derived field (case 2) - using Entity Query API
-                        getter.line(&format!("Ok({}::find().where_eq(\"{}\", self.id.clone()).list().await?)", target_type, derived_field));
+                        getter.line(format!("Ok({}::find().where_eq(\"{}\", self.id.clone()).list().await?)", target_type, derived_field));
                     } else {
                         // Single relation derived field (case 4) - using Entity Query API
-                        getter.line(&format!("Ok({}::find().where_eq(\"{}\", self.id.clone()).first().await?)", target_type, derived_field));
+                        getter.line(format!("Ok({}::find().where_eq(\"{}\", self.id.clone()).first().await?)", target_type, derived_field));
                     }
                 } else {
                     getter.line("// TODO: derivedFrom field argument missing")
@@ -299,13 +297,13 @@ impl EntityCodeGenerator {
                     .vis("pub")
                     .set_async(true)
                     .arg_ref_self()
-                    .ret(&format!("EntityResult<Vec<{}>>", target_type));
+                    .ret(format!("EntityResult<Vec<{}>>", target_type));
 
-                getter.line(&format!(
+                getter.line(format!(
                     "let ids = self.{0}_ids.iter().map(|id| <{1} as Entity>::Id::from_string(&id.to_string())).collect::<Result<Vec<_>, _>>()?;",
                     rust_field_name, target_type
                 ));
-                getter.line(&format!("Ok({}::get_many(&ids).await?)", target_type));
+                getter.line(format!("Ok({}::get_many(&ids).await?)", target_type));
                 impl_block.push_fn(getter);
             } else {
                 // Single relation: generate get helper
@@ -315,21 +313,21 @@ impl EntityCodeGenerator {
                     .vis("pub")
                     .set_async(true)
                     .arg_ref_self()
-                    .ret(&format!("EntityResult<Option<{}>>", target_type));
+                    .ret(format!("EntityResult<Option<{}>>", target_type));
 
                 if is_optional {
-                    getter.line(&format!("if let Some(id) = &self.{0}_id {{", rust_field_name));
-                    getter.line(&format!("    let id = <{} as Entity>::Id::from_string(&id.to_string())?;", target_type));
-                    getter.line(&format!("    Ok({}::get(&id).await?)", target_type));
+                    getter.line(format!("if let Some(id) = &self.{0}_id {{", rust_field_name));
+                    getter.line(format!("    let id = <{} as Entity>::Id::from_string(&id.to_string())?;", target_type));
+                    getter.line(format!("    Ok({}::get(&id).await?)", target_type));
                     getter.line("} else {");
                     getter.line("    Ok(None)");
                     getter.line("}");
                 } else {
-                    getter.line(&format!(
+                    getter.line(format!(
                         "let id = <{1} as Entity>::Id::from_string(&self.{0}_id.to_string())?;",
                         rust_field_name, target_type
                     ));
-                    getter.line(&format!("Ok({}::get(&id).await?)", target_type));
+                    getter.line(format!("Ok({}::get(&id).await?)", target_type));
                 }
 
                 impl_block.push_fn(getter);
@@ -462,7 +460,7 @@ impl CodeGenerator for EntityCodeGenerator {
         
         // Ensure output directory exists
         if !output_dir.exists() {
-            fs::create_dir_all(&output_dir)
+            fs::create_dir_all(output_dir)
                 .with_context(|| format!("Failed to create output directory: {}", output_dir.display()))?;
         }
         

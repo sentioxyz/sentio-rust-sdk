@@ -113,7 +113,9 @@ impl EventLogger {
         }
 
         // Replace non-alphanumeric chars with underscore and limit to 128 chars
-        let normalized = name
+        
+
+        name
             .chars()
             .take(128)
             .map(|c| {
@@ -123,9 +125,7 @@ impl EventLogger {
                     '_'
                 }
             })
-            .collect();
-
-        normalized
+            .collect()
     }
 }
 

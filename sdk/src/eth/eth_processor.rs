@@ -201,11 +201,10 @@ pub(crate) struct EventHandler {
 
 impl EventHandler {
     pub(crate) fn fetch_config(&self) -> Option<EthFetchConfig> {
-        if let Some(options) = &self.options {
-            if let Some(config) = &options.fetch_config {
-                return Some(config.clone());
+        if let Some(options) = &self.options
+            && let Some(config) = &options.fetch_config {
+                return Some(*config);
             }
-        }
         None
     }
 
@@ -264,17 +263,13 @@ impl EthProcessorImpl {
 impl BaseProcessor for EthProcessorImpl {
     fn chain_id(&self) -> &str {
         self.options
-            .network
-            .as_ref()
-            .map(|s| s.as_str())
+            .network.as_deref()
             .unwrap_or("1")
     }
 
     fn name(&self) -> &str {
         self.options
-            .name
-            .as_ref()
-            .map(|s| s.as_str())
+            .name.as_deref()
             .unwrap_or("eth-processor")
     }
 

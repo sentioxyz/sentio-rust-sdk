@@ -63,19 +63,17 @@ impl ParsedEthData {
                 metadata.transaction_index = receipt.transaction_index.as_u32() as i32;
             }
             // Use contract address from receipt if available
-            if let Some(contract_address) = receipt.contract_address {
-                if metadata.address.is_empty() {
+            if let Some(contract_address) = receipt.contract_address
+                && metadata.address.is_empty() {
                     metadata.address = format!("{:?}", contract_address);
                 }
-            }
         }
 
         // Extract metadata from block data
-        if let Some(ref block) = self.block {
-            if metadata.block_number == 0 {
+        if let Some(ref block) = self.block
+            && metadata.block_number == 0 {
                 metadata.block_number = block.number.unwrap_or_default().as_u64();
             }
-        }
 
         metadata
     }
@@ -100,37 +98,34 @@ impl From<&EthLog> for ParsedEthData {
         }
 
         // Parse transaction data if available
-        if let Some(raw_transaction) = &eth_log_data.raw_transaction {
-            if !raw_transaction.is_empty() {
+        if let Some(raw_transaction) = &eth_log_data.raw_transaction
+            && !raw_transaction.is_empty() {
                 debug!("Parsing raw_transaction JSON: {}", raw_transaction);
                 match serde_json::from_str::<Transaction>(raw_transaction) {
                     Ok(tx) => parsed_data.transaction = Some(tx),
                     Err(e) => debug!("Failed to parse Transaction: {}", e),
                 }
             }
-        }
 
         // Parse transaction receipt data if available
-        if let Some(raw_receipt) = &eth_log_data.raw_transaction_receipt {
-            if !raw_receipt.is_empty() {
+        if let Some(raw_receipt) = &eth_log_data.raw_transaction_receipt
+            && !raw_receipt.is_empty() {
                 debug!("Parsing raw_transaction_receipt JSON: {}", raw_receipt);
                 match serde_json::from_str::<TransactionReceipt>(raw_receipt) {
                     Ok(receipt) => parsed_data.receipt = Some(receipt),
                     Err(e) => debug!("Failed to parse TransactionReceipt: {}", e),
                 }
             }
-        }
 
         // Parse block data if available
-        if let Some(raw_block) = &eth_log_data.raw_block {
-            if !raw_block.is_empty() {
+        if let Some(raw_block) = &eth_log_data.raw_block
+            && !raw_block.is_empty() {
                 debug!("Parsing raw_block JSON: {}", raw_block);
                 match serde_json::from_str::<Block<H256>>(raw_block) {
                     Ok(block) => parsed_data.block = Some(block),
                     Err(e) => debug!("Failed to parse Block: {}", e),
                 }
             }
-        }
 
         parsed_data
     }

@@ -186,11 +186,10 @@ impl GenerationResult {
         println!("   Generated {} entities", self.entity_count);
         println!("   Created {} files", self.generated_files.len());
         
-        if let Some(ref validation) = self.validation {
-            if !validation.warnings.is_empty() {
+        if let Some(ref validation) = self.validation
+            && !validation.warnings.is_empty() {
                 println!("   Schema validation warnings: {}", validation.warnings.len());
             }
-        }
     }
 }
 

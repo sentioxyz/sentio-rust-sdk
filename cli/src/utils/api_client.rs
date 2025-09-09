@@ -15,20 +15,15 @@ pub struct UploadRequest {
 
 #[derive(Deserialize, Debug)]
 #[serde(default)]
+#[derive(Default)]
 pub struct CheckKeyResponse {
     pub username: String,
 }
 
-impl Default for CheckKeyResponse {
-    fn default() -> Self {
-        Self {
-            username: String::new(),
-        }
-    }
-}
 
 #[derive(Deserialize, Debug)]
 #[serde(default)]
+#[derive(Default)]
 pub struct UploadResponse {
     pub deployment_id: String,
     pub status: String,
@@ -36,52 +31,26 @@ pub struct UploadResponse {
     pub message: Option<String>,
 }
 
-impl Default for UploadResponse {
-    fn default() -> Self {
-        Self {
-            deployment_id: String::new(),
-            status: String::new(),
-            url: String::new(),
-            message: None,
-        }
-    }
-}
 
 #[derive(Deserialize, Debug)]
 #[serde(default)]
+#[derive(Default)]
 pub struct ApiError {
     pub error: String,
     pub message: String,
     pub code: Option<i32>,
 }
 
-impl Default for ApiError {
-    fn default() -> Self {
-        Self {
-            error: String::new(),
-            message: String::new(),
-            code: None,
-        }
-    }
-}
 
 #[derive(Deserialize, Debug)]
 #[serde(default)]
+#[derive(Default)]
 pub struct AuthResponse {
     pub token: String,
     pub expires_at: String,
     pub user_id: String,
 }
 
-impl Default for AuthResponse {
-    fn default() -> Self {
-        Self {
-            token: String::new(),
-            expires_at: String::new(),
-            user_id: String::new(),
-        }
-    }
-}
 
 #[derive(Serialize, Debug)]
 pub struct AuthRequest {
@@ -112,6 +81,12 @@ impl Default for ApiClientConfig {
 pub struct SentioApiClient {
     client: reqwest::Client,
     config: ApiClientConfig,
+}
+
+impl Default for SentioApiClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SentioApiClient {

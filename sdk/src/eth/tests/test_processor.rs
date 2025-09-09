@@ -2,7 +2,17 @@
 //!
 //! This module provides a sample processor that demonstrates how to use
 //! the Ethereum event handlers and can be used for testing the framework.
- 
+
+#[cfg(test)]
+use async_trait::async_trait;
+#[cfg(test)]
+use crate::core::Context;
+#[cfg(test)]
+use crate::eth::context::EthContext;
+#[cfg(test)]
+use crate::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
+#[cfg(test)]
+use crate::eth::{EthEventHandler, EventMarker};
 
 #[cfg(test)]
 /// Sample ERC20 processor for testing event handlers

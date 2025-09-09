@@ -72,7 +72,7 @@ impl EventMarker for ApprovalEvent {
 impl EthEventHandler<TransferEvent> for MyEthProcessor {
     async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
         println!("🔄 Processing TRANSFER event from contract: {:?} on chain: {}",
-                 event.log.address, ctx.chain_id());
+                 event.log.address(), ctx.chain_id());
 
         println!("Transfer event details - Block: {}, Transaction: {:?}, Log Index: {}",
                  event.log.block_number.unwrap_or_default(),
@@ -81,21 +81,21 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
         );
 
         // Extract transfer data from event logs (simplified version)
-        let from_address = if event.log.topics.len() > 1 {
-            format!("0x{:x}", event.log.topics[1])
+        let from_address = if event.log.topics().len() > 1 {
+            format!("0x{:x}", event.log.topics()[1])
         } else {
             "0x0000000000000000000000000000000000000000".to_string()
         };
         
-        let to_address = if event.log.topics.len() > 2 {
-            format!("0x{:x}", event.log.topics[2])
+        let to_address = if event.log.topics().len() > 2 {
+            format!("0x{:x}", event.log.topics()[2])
         } else {
             "0x0000000000000000000000000000000000000000".to_string()
         };
 
         // Parse value from event data (simplified - real implementation would decode properly)
-        let value = if !event.log.data.is_empty() {
-            BigDecimal::from(event.log.data.len() as u64) // Placeholder calculation
+        let value = if !event.log.data().is_empty() {
+            BigDecimal::from(event.log.data().len() as u64) // Placeholder calculation
         } else {
             BigDecimal::from(1000) // Default value
         };
@@ -111,7 +111,7 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
 
         // 📝 EVENT LOGGING: Record structured event data
         let transfer_event = sentio_sdk::core::Event::name("Transfer")
-            .attr("contract", format!("{:?}", event.log.address))
+            .attr("contract", format!("{:?}", event.log.address()))
             .attr("from", from_address.clone())
             .attr("to", to_address.clone())
             .attr("value", value.clone())
@@ -155,7 +155,7 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
             .transaction_hash(format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
             .block_number(BigInt::from(event.log.block_number.unwrap_or_default().as_u64()))
             .log_index(event.log.log_index.unwrap_or_default().as_u32() as i32)
-            .contract(format!("{:?}", event.log.address))
+            .contract(format!("{:?}", event.log.address()))
             .from(from_address)
             .to(to_address)
             .value(value)
@@ -175,30 +175,30 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
 impl EthEventHandler<ApprovalEvent> for MyEthProcessor {
     async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
         println!("🔄 Processing APPROVAL event from contract: {:?} on chain: {}",
-                 event.log.address, ctx.chain_id());
+                 event.log.address(), ctx.chain_id());
 
         // Extract approval data from event logs
-        let owner_address = if event.log.topics.len() > 1 {
-            format!("0x{:x}", event.log.topics[1])
+        let owner_address = if event.log.topics().len() > 1 {
+            format!("0x{:x}", event.log.topics()[1])
         } else {
             "0x0000000000000000000000000000000000000000".to_string()
         };
         
-        let spender_address = if event.log.topics.len() > 2 {
-            format!("0x{:x}", event.log.topics[2])
+        let spender_address = if event.log.topics().len() > 2 {
+            format!("0x{:x}", event.log.topics()[2])
         } else {
             "0x0000000000000000000000000000000000000000".to_string()
         };
 
-        let allowance_value = if !event.log.data.is_empty() {
-            BigDecimal::from(event.log.data.len() as u64)
+        let allowance_value = if !event.log.data().is_empty() {
+            BigDecimal::from(event.log.data().len() as u64)
         } else {
             BigDecimal::from(0)
         };
 
         // 📝 EVENT LOGGING: Record structured event data for approval
         let approval_event = sentio_sdk::core::Event::name("Approval")
-            .attr("contract", format!("{:?}", event.log.address))
+            .attr("contract", format!("{:?}", event.log.address()))
             .attr("owner", owner_address.clone())
             .attr("spender", spender_address.clone())
             .attr("value", allowance_value.clone())

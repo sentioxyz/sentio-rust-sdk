@@ -2533,7 +2533,6 @@ mod tests {
         pub data: Bytes,
     }
     use crate::common::RichStruct;
-    use ethers::utils::hex;
 
     #[test]
     fn test_deserialize_from_bin_data() {

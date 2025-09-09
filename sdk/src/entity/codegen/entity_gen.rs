@@ -725,7 +725,7 @@ mod tests {
         account_entity.add_field("id".to_string(), account_id_field);
 
         // Case 1: Many relations field - Vec<Post> (direct relation)
-        let mut posts_field = FieldDefinition::new(
+        let posts_field = FieldDefinition::new(
             "posts".to_string(),
             FieldType::List(Box::new(FieldType::Object("Post".to_string()))),
         );

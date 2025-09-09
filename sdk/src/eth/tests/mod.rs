@@ -13,6 +13,7 @@ mod tests {
     use crate::core::event_types::AttributeValue;
     use crate::eth::EthHandlerType;
     use crate::testing::{addresses, chain_ids, mock_transfer_log, TestProcessorServer};
+    use super::test_processor::{TestErc20Processor, TransferEvent};
     use super::*;
 
     /// Example test showing how to test an ERC20 transfer handler
@@ -197,10 +198,9 @@ mod tests {
     async fn test_multiple_events() {
         let mut server = TestProcessorServer::new();
         
-        // TODO: Add processor registration when needed
-        // TestErc20Processor::new(addresses::TEST_CONTRACT, "TestToken")
-        //     .configure_event::<TransferEvent>(None)
-        //     .bind(&server);
+        TestErc20Processor::new(addresses::TEST_CONTRACT, "TestToken")
+            .configure_event::<TransferEvent>(None)
+            .bind(&server);
 
         server.start().await.expect("Failed to start test server");
 
@@ -215,9 +215,9 @@ mod tests {
         let eth_facet = server.eth();
         let result = eth_facet.test_logs(logs, Some(chain_ids::ETHEREUM)).await;
 
-        // TODO: Add assertions for batch processing
-        // assert_eq!(result.counters.len(), 3); // One counter increment per transfer
-        // assert_eq!(result.events.len(), 3);   // One event log per transfer
+        
+        assert_eq!(result.counters.len(), 3); // One counter increment per transfer
+        assert_eq!(result.events.len(), 3);   // One event log per transfer
 
         println!("Multiple events processed successfully");
     }

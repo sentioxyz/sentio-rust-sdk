@@ -13,7 +13,7 @@ use crate::abi_client::AbiClient;
 use crate::generated::entities::DecodedLogBuilder;
 
 
-pub(crate) struct LogDecoderProcessor {
+pub struct LogDecoderProcessor {
     address: String,
     chain_id: String,
     name: String,
@@ -75,9 +75,13 @@ impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
             Ok(Some(event_with_decoded)) => {
                 // Access the decoded data directly from the event
                 if let Some(decoded) = &event_with_decoded.decoded {
-                    // Convert decoded data to the format expected by the entity
-                    let args = format_decoded_args(decoded);
-                    let (arg_key_mappings, arg_types) = extract_param_info(&event, &self.abi_client).await.unwrap_or_default();
+                    // Pull parameter names and types from ABI to map values by param name
+                    let (arg_key_mappings, arg_types, indexed_flags) = extract_param_info(&event, &self.abi_client)
+                        .await
+                        .unwrap_or_else(|_| (vec![], vec![], vec![]));
+
+                    // Convert decoded data to a name->value JSON map
+                    let args = format_decoded_args(decoded, &arg_key_mappings, &indexed_flags);
                     let event_name = extract_event_name(&event, &self.abi_client).await.unwrap_or("unknown".to_string());
                     let signature = format!("{:?}", event.log.topics()[0]);
 
@@ -156,27 +160,50 @@ impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
     }
 }
 
-// Helper function to format decoded args from alloy DecodedEvent
-fn format_decoded_args(decoded: &alloy::dyn_abi::DecodedEvent) -> String {
-    let mut args_map = std::collections::HashMap::new();
-    
-    // Add indexed values
-    for (i, value) in decoded.indexed.iter().enumerate() {
-        args_map.insert(format!("indexed_{}", i), format_dyn_sol_value(value));
+// Helper: format decoded args into a name->value JSON using ABI param ordering
+fn format_decoded_args(
+    decoded: &alloy::dyn_abi::DecodedEvent,
+    param_names: &[String],
+    indexed_flags: &[bool],
+) -> String {
+    use std::collections::HashMap;
+
+    // If we don't have names, fall back to the previous positional format
+    if param_names.is_empty() || indexed_flags.len() != param_names.len() {
+        let mut fallback = HashMap::new();
+        for (i, v) in decoded.indexed.iter().enumerate() {
+            fallback.insert(format!("indexed_{}", i), format_dyn_sol_value(v));
+        }
+        for (i, v) in decoded.body.iter().enumerate() {
+            fallback.insert(format!("body_{}", i), format_dyn_sol_value(v));
+        }
+        return serde_json::to_string(&fallback).unwrap_or_else(|_| "{}".to_string());
     }
-    
-    // Add body values  
-    for (i, value) in decoded.body.iter().enumerate() {
-        args_map.insert(format!("body_{}", i), format_dyn_sol_value(value));
+
+    let mut args_map: HashMap<String, String> = HashMap::with_capacity(param_names.len());
+    let mut idx_i = 0usize;
+    let mut body_i = 0usize;
+    for (pos, name) in param_names.iter().enumerate() {
+        let is_indexed = indexed_flags.get(pos).copied().unwrap_or(false);
+        let value_opt = if is_indexed {
+            decoded.indexed.get(idx_i).map(|v| (true, v))
+        } else {
+            decoded.body.get(body_i).map(|v| (false, v))
+        };
+
+        if let Some((from_indexed, v)) = value_opt {
+            args_map.insert(name.clone(), format_dyn_sol_value(v));
+            if from_indexed { idx_i += 1; } else { body_i += 1; }
+        }
     }
-    
+
     serde_json::to_string(&args_map).unwrap_or_else(|_| "{}".to_string())
 }
 
 // Extract event parameter information
-async fn extract_param_info(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+async fn extract_param_info(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<bool>)> {
     if event.log.topics().is_empty() {
-        return Ok((vec![], vec![]));
+        return Ok((vec![], vec![], vec![]));
     }
 
     let signature = &format!("{:?}", event.log.topics()[0]);
@@ -188,9 +215,10 @@ async fn extract_param_info(event: &EthEvent, abi_client: &AbiClient) -> anyhow:
         let json_event: JsonEvent = serde_json::from_str(&abi_item)?;
         let arg_key_mappings: Vec<String> = json_event.inputs.iter().map(|input| input.name.clone()).collect();
         let arg_types: Vec<String> = json_event.inputs.iter().map(|input| input.ty.to_string()).collect();
-        Ok((arg_key_mappings, arg_types))
+        let indexed_flags: Vec<bool> = json_event.inputs.iter().map(|input| input.indexed).collect();
+        Ok((arg_key_mappings, arg_types, indexed_flags))
     } else {
-        Ok((vec![], vec![]))
+        Ok((vec![], vec![], vec![]))
     }
 }
 

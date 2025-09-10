@@ -122,14 +122,9 @@ impl EthEvent {
             }
         }
         
-        // Create the body type (tuple of non-indexed parameters)
-        let body_type = if non_indexed_params.is_empty() {
-            alloy::dyn_abi::DynSolType::Tuple(vec![])
-        } else if non_indexed_params.len() == 1 {
-            non_indexed_params.into_iter().next().unwrap()
-        } else {
-            alloy::dyn_abi::DynSolType::Tuple(non_indexed_params)
-        };
+        // Create the body type as a tuple of non-indexed parameters
+        // Always use a tuple, even for a single parameter, to match decoder expectations
+        let body_type = alloy::dyn_abi::DynSolType::Tuple(non_indexed_params);
 
         let topics: Vec<B256> = self.log.topics().iter()
             .map(|topic| B256::from_slice(topic.as_slice()))
@@ -352,5 +347,100 @@ impl BaseProcessor for EthProcessorImpl {
 
     fn handler_count(&self) -> usize {
         self.event_handlers.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::utils::{mock_transfer_log, mock_approval_log};
+    use alloy::dyn_abi::DynSolValue;
+    use alloy::primitives::{Address, Bytes, U256};
+    use alloy::primitives::hex::FromHex;
+    use std::str::FromStr;
+    use alloy::consensus::private::alloy_primitives;
+
+    #[test]
+    fn test_decode_from_abi_str() {
+        let from = "0x742d35cc6834b8532d5f7c6aa25a6b5f9a2a2b6f";
+        let to = "0x742d35cc6834b8532d5f7c6aa25a6b5f9a2a2c7f";
+        let amount = "1000000000000000000000";
+
+        // Build proper topics: [signature, from(indexed), to(indexed)]
+        let sig = B256::from_str("0x16cdf1707799c6655baac6e210f52b94b7cec08adcaf9ede7dfe8649da926146").unwrap();
+        let from_addr = Address::from_str(from).unwrap();
+        let to_addr = Address::from_str(to).unwrap();
+        let mut from_topic_bytes = [0u8; 32];
+        from_topic_bytes[12..].copy_from_slice(from_addr.as_slice());
+        let mut to_topic_bytes = [0u8; 32];
+        to_topic_bytes[12..].copy_from_slice(to_addr.as_slice());
+        let topics = vec![sig, B256::from(from_topic_bytes), B256::from(to_topic_bytes)];
+
+        // Data contains only the non-indexed amount (as 32-byte big-endian)
+        let amount_u256 = U256::from_str(amount).unwrap();
+        let amount_hex = format!("0x{:064x}", amount_u256);
+
+        let log = Log {
+            inner: alloy_primitives::Log {
+                address: Address::from_str("0xbd0edfbac386c9964f8f013d65d7dad5382d9cd7").unwrap(),
+                data: LogData::new_unchecked(
+                    topics,
+                    Bytes::from_hex(amount_hex).unwrap(),
+                ),
+            },
+            block_hash: Some(B256::with_last_byte(0x69)),
+            block_number: Some(0x69),
+            block_timestamp: None,
+            transaction_hash: Some(B256::with_last_byte(0x69)),
+            transaction_index: Some(0x69),
+            log_index: Some(0x69),
+            removed: false,
+        };
+        let eth_event = EthEvent { log, decoded: None };
+
+        let transfer_abi = r#"{
+            "type": "event",
+            "name": "CoinTransfer",
+            "anonymous": false,
+            "inputs": [
+                {"name": "sender", "type": "address", "indexed": true},
+                {"name": "receiver", "type": "address", "indexed": true},
+                {"name": "amount", "type": "uint256", "indexed": false}
+            ]
+        }"#;
+
+        let decoded_event = eth_event
+            .decode_from_abi_str(transfer_abi)
+            .expect("expected successful decode for valid log + ABI");
+
+        let decoded = decoded_event
+            .decoded
+            .as_ref()
+            .expect("decoded event payload should be present");
+
+        // Verify indexed topics (from, to)
+        assert_eq!(decoded.indexed.len(), 2);
+        match &decoded.indexed[0] {
+            DynSolValue::Address(addr) => {
+                assert_eq!(format!("0x{:x}", addr), from);
+            }
+            other => panic!("unexpected type for indexed[0]: {:?}", other),
+        }
+        match &decoded.indexed[1] {
+            DynSolValue::Address(addr) => {
+                assert_eq!(format!("0x{:x}", addr), to);
+            }
+            other => panic!("unexpected type for indexed[1]: {:?}", other),
+        }
+
+        // Verify data (value)
+        assert_eq!(decoded.body.len(), 1);
+        match &decoded.body[0] {
+            DynSolValue::Uint(v, _) => {
+                let expected = U256::from_str(amount).expect("valid u256 amount");
+                assert_eq!(*v, expected, "decoded amount should match");
+            }
+            other => panic!("unexpected type for body[0]: {:?}", other),
+        }
     }
 }

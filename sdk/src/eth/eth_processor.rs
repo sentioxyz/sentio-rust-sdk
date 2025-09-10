@@ -79,7 +79,23 @@ pub struct EthEvent {
 impl EthEvent {
     /// Decode the log using an ABI string and populate decoded_log field
     pub fn decode_from_abi_str(&self, abi_str: &str) -> Result<EthEvent> {
-        let decoded_data = self.parse_log_with_alloy(abi_str)?;
+        // Catch panics from alloy decode operations and convert to errors
+        let decoded_data = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.parse_log_with_alloy(abi_str)
+        })) {
+            Ok(result) => result?,
+            Err(panic_payload) => {
+                let panic_message = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Unknown panic occurred during log decoding".to_string()
+                };
+                return Err(anyhow::anyhow!("Log decode failed due to panic: {}", panic_message));
+            }
+        };
+        
         Ok(EthEvent{
             log: self.log.clone(),
             decoded: Some(decoded_data),

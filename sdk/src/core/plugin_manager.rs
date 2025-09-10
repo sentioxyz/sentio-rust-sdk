@@ -3,6 +3,7 @@ use crate::core::{RuntimeContext, RUNTIME_CONTEXT};
 use crate::{DataBinding, ProcessResult};
 use dashmap::DashMap;
 use std::sync::RwLock;
+use futures::FutureExt;
 
 pub struct PluginManager {
     pub(crate) plugins: DashMap<String, Box<dyn FullPlugin>>,
@@ -166,9 +167,24 @@ impl PluginManager {
             .get(&plugin_name)
             .ok_or_else(|| anyhow::anyhow!("Plugin not found: {}", plugin_name))?;
 
-        RUNTIME_CONTEXT
-            .scope(runtime_context, plugin.value().process_binding(data))
-            .await
+        // Catch panics and convert them to errors
+        let future = std::panic::AssertUnwindSafe(
+            RUNTIME_CONTEXT.scope(runtime_context, plugin.value().process_binding(data))
+        );
+        
+        match future.catch_unwind().await {
+            Ok(process_result) => process_result,
+            Err(panic_payload) => {
+                let panic_message = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Unknown panic occurred".to_string()
+                };
+                Err(anyhow::anyhow!("Plugin '{}' panicked: {}", plugin_name, panic_message))
+            }
+        }
     }
 }
 

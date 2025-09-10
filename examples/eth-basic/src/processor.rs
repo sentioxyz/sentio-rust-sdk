@@ -4,7 +4,7 @@ use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::eth::eth_processor::*;
 use sentio_sdk::eth::{EthEventHandler, EventMarker};
 use sentio_sdk::{async_trait, EntityStore};
-use sentio_sdk::entity::{BigInt, BigDecimal, Timestamp, ID, Entity};
+use sentio_sdk::entity::{BigInt, BigDecimal, Timestamp, ID};
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -94,8 +94,8 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
         };
 
         // Parse value from event data (simplified - real implementation would decode properly)
-        let value = if !event.log.data().is_empty() {
-            BigDecimal::from(event.log.data().len() as u64) // Placeholder calculation
+        let value = if !event.log.data().data.is_empty() {
+            BigDecimal::from(event.log.data().data.len() as u64) // Placeholder calculation
         } else {
             BigDecimal::from(1000) // Default value
         };
@@ -115,7 +115,7 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
             .attr("from", from_address.clone())
             .attr("to", to_address.clone())
             .attr("value", value.clone())
-            .attr("blockNumber", event.log.block_number.unwrap_or_default().as_u64() as i64)
+            .attr("blockNumber", event.log.block_number.unwrap_or_default() as i64)
             .attr("transactionHash", format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
             .attr("type", transfer_type);
 
@@ -135,7 +135,7 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
 
         // Gauge: Track current block number
         let block_gauge = ctx.base_context().gauge("latest_block_processed");
-        let _ = block_gauge.record(event.log.block_number.unwrap_or_default().as_u64() as f64, None).await;
+        let _ = block_gauge.record(event.log.block_number.unwrap_or_default() as f64, None).await;
 
         // Gauge: Track transfer value (convert to f64 for gauge)
         let value_f64 = value.to_string().parse::<f64>().unwrap_or(0.0);
@@ -153,8 +153,8 @@ impl EthEventHandler<TransferEvent> for MyEthProcessor {
         let transfer = TransferBuilder::default()
             .id(ID::from(transfer_id))
             .transaction_hash(format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
-            .block_number(BigInt::from(event.log.block_number.unwrap_or_default().as_u64()))
-            .log_index(event.log.log_index.unwrap_or_default().as_u32() as i32)
+            .block_number(BigInt::from(event.log.block_number.unwrap_or_default()))
+            .log_index(event.log.log_index.unwrap_or_default() as i32)
             .contract(format!("{:?}", event.log.address()))
             .from(from_address)
             .to(to_address)
@@ -190,8 +190,8 @@ impl EthEventHandler<ApprovalEvent> for MyEthProcessor {
             "0x0000000000000000000000000000000000000000".to_string()
         };
 
-        let allowance_value = if !event.log.data().is_empty() {
-            BigDecimal::from(event.log.data().len() as u64)
+        let allowance_value = if !event.log.data().data.is_empty() {
+            BigDecimal::from(event.log.data().data.len() as u64)
         } else {
             BigDecimal::from(0)
         };
@@ -202,7 +202,7 @@ impl EthEventHandler<ApprovalEvent> for MyEthProcessor {
             .attr("owner", owner_address.clone())
             .attr("spender", spender_address.clone())
             .attr("value", allowance_value.clone())
-            .attr("blockNumber", event.log.block_number.unwrap_or_default().as_u64() as i64);
+            .attr("blockNumber", event.log.block_number.unwrap_or_default() as i64);
 
         let event_logger = ctx.base_context().event_logger();
         let _ = event_logger.emit(&approval_event).await;

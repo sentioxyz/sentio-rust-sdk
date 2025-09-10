@@ -184,7 +184,6 @@ impl EthPlugin {
         };
         let timestamp = eth_log_data.timestamp.unwrap_or_default();
         
-        // Parse all Ethereum data using ethers library
         let parsed_data = ParsedEthData::from(eth_log_data);
 
         let mut result = crate::ProcessResult::default();

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use anyhow::Result;
 use tonic::{Request, Response, Status};
@@ -34,14 +33,10 @@ impl ProcessorService {
         T: crate::core::BaseProcessor + 'static,
         P: crate::core::plugin::PluginRegister<T> + crate::core::plugin::FullPlugin + Default + 'static,
     {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let plugin_manager_arc = self.plugin_manager.clone();
-
-        rt.block_on(async move {
-            plugin_manager_arc.with_plugin_mut::<P, _, _>(|plugin| {
-                plugin.register_processor(processor);
+        self.plugin_manager
+            .with_plugin_mut::<P, _, _>(|plugin| {
+                let _ = plugin.register_processor(processor);
             });
-        });
     }
 
     /// Set the global GraphQL schema that should be returned in get_config
@@ -160,7 +155,9 @@ impl ProcessorV3 for ProcessorService {
         let plugin_manager = self.plugin_manager.clone();
 
         tokio::spawn(async move {
-            let mut db_backends: HashMap<i32, Arc<crate::entity::store::backend::Backend>> = HashMap::new();
+            // new session
+            let db_backend =
+                Arc::new(crate::entity::store::backend::Backend::remote());
             while let Some(stream_request) = inbound_stream.next().await {
                 match stream_request {
                     Ok(req) => {
@@ -170,47 +167,61 @@ impl ProcessorV3 for ProcessorService {
                         );
                         let process_id = req.process_id;
                         let tx_clone = tx.clone();
-                        let db_backend = db_backends.entry(req.process_id).or_insert_with(|| {
-                            Arc::new(crate::entity::store::backend::Backend::remote())
-                        });
+
                         // Process the request and send responses
                         if let Some(value) = req.value {
                             match value {
                                 process_stream_request::Value::Binding(binding) => {
                                     debug!("Processing binding for chain_id: {}", binding.chain_id);
-
-                                    // Create RuntimeContext with the tx clone for event logging and empty metadata
-                                    let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_clone.clone(), process_id, db_backend.clone());
-
-                                    // Use PluginManager's process method with the binding and context
-                                    match plugin_manager.process(&binding, runtime_context).await {
-                                        Ok(result) => {
-                                            debug!(
-                                                "Successfully processed binding for chain '{}'",
-                                                binding.chain_id
-                                            );
-                                            let response = ProcessStreamResponseV3 {
-                                                process_id,
-                                                value: Some(crate::processor::process_stream_response_v3::Value::Result(result)),
-                                            };
-                                            if let Err(e) = tx_clone.send(Ok(response)).await {
-                                                error!("Failed to send response: {}", e);
+                                    let pm = plugin_manager.clone();
+                                    let db = db_backend.clone();
+                                    let tx_resp = tx_clone.clone();
+                                    // Spawn per-binding processing so the stream keeps receiving next requests
+                                    tokio::spawn(async move {
+                                        // Create RuntimeContext with the tx clone for event logging and empty metadata
+                                        let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_resp.clone(), process_id, db.clone());
+                                        // Process and send response
+                                        let response = match pm.process(&binding, runtime_context).await {
+                                            Ok(result) => {
+                                                debug!(
+                                                    "Successfully processed binding for chain '{}'",
+                                                    binding.chain_id
+                                                );
+                                                ProcessStreamResponseV3 {
+                                                    process_id,
+                                                    value: Some(crate::processor::process_stream_response_v3::Value::Result(result)),
+                                                }
                                             }
+                                            Err(e) => {
+                                                error!(
+                                                    "Failed to process binding for chain '{}': {}",
+                                                    binding.chain_id, e
+                                                );
+                                                let mut err_result = crate::processor::ProcessResult::default();
+                                                err_result.states = Some(crate::processor::StateResult {
+                                                    config_updated: false,
+                                                    error: Some(e.to_string()),
+                                                });
+                                                ProcessStreamResponseV3 {
+                                                    process_id,
+                                                    value: Some(crate::processor::process_stream_response_v3::Value::Result(err_result)),
+                                                }
+                                            }
+                                        };
+                                        // session ended, reset the db
+                                        db.reset();
+                                        // this is the last response to end the session.
+                                        if let Err(e) = tx_resp.send(Ok(response)).await {
+                                            error!("Failed to send response: {}", e);
                                         }
-                                        Err(e) => {
-                                            error!(
-                                                "Failed to process binding for chain '{}': {}",
-                                                binding.chain_id, e
-                                            );
-                                        }
-                                    }
+                                    });
                                 }
                                 process_stream_request::Value::DbResult(db_result) => {
                                     db_backend.receive_db_result(db_result)
                                 }
                                 process_stream_request::Value::Start(start) => {
                                     debug!("Received start signal: {}", start);
-                                    // Handle start signal if needed
+                                    todo!()
                                 }
                             }
                         }

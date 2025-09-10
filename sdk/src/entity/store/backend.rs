@@ -109,7 +109,8 @@ impl StorageBackend for RemoteBackend {
             id: ids,
         });
         let req = self.new_request(op);
-        self.send(req).await
+        self.send_async(req).await?;
+        Ok(())
     }
 
     async fn list(
@@ -137,7 +138,8 @@ impl StorageBackend for RemoteBackend {
             entity_data: data,
         });
         let req = self.new_request(op);
-        self.send(req).await
+        self.send_async(req).await?;
+        Ok(())
     }
 }
 
@@ -155,6 +157,15 @@ impl Backend {
     pub fn receive_db_result(&self, db_result: crate::processor::DbResponse) {
         if let Backend::Remote(remote) = self {
             remote.receive_db_result(db_result)
+        }
+    }
+
+    pub fn reset(&self) {
+        if let Backend::Remote(remote) = self {
+            if remote.promises.len() > 0 {
+                warn!("Resetting remote backend with {} pending promises", remote.promises.len());
+                remote.promises.clear();
+            }
         }
     }
 }

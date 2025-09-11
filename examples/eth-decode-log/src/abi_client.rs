@@ -1,9 +1,10 @@
+use alloy::json_abi::Event as JsonEvent;
 use anyhow::Result;
-use moka::sync::Cache;
+use moka::future::Cache;
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
-use tracing::{debug, error};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Deserialize)]
 struct SentioApiResponse {
@@ -15,7 +16,9 @@ pub struct AbiClient {
     client: Client,
     base_url: String,
     chain_id: String,
-    cache: Arc<Cache<String, String>>,
+    cache: Cache<String, Arc<JsonEvent>>,
+    request_count: AtomicU64,
+    cache_hits: AtomicU64,
 }
 
 impl AbiClient {
@@ -24,7 +27,9 @@ impl AbiClient {
             client: Client::new(),
             base_url: format!("{}/api/v1/solidity/signature", sentio_host),
             chain_id,
-            cache: Arc::new(Cache::new(100_000)),
+            cache: Cache::new(1000_000),
+            request_count: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
         }
     }
 
@@ -34,13 +39,34 @@ impl AbiClient {
         address: &str,
         topics: Option<&[String]>,
         data: Option<&str>,
-    ) -> Result<Option<String>> {
-        // Check cache first (only if no topics/data for broader caching)
-        if topics.is_none() && data.is_none()
-            && let Some(cached) = self.cache.get(signature) {
-                debug!("Cache hit for signature: {}", signature);
-                return Ok(Some(cached));
-            }
+    ) -> Result<Option<Arc<JsonEvent>>> {
+        // Build cache key: include topics if provided
+        let cache_key = if let Some(t) = topics {
+            let mut key = String::from(signature);
+            key.push('|');
+            key.push_str(&t.join(","));
+            key
+        } else {
+            signature.to_string()
+        };
+
+        // Increment request counter and print stats every 1000 calls
+        let cnt = self.request_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if cnt % 1000 == 0 {
+            let hits = self.cache_hits.load(Ordering::Relaxed);
+            let hit_rate = if cnt > 0 { (hits as f64) / (cnt as f64) * 100.0 } else { 0.0 };
+            let entries = self.cache.entry_count();
+            info!(
+                "AbiClient cache stats: requests={}, hits={}, hit_rate={:.2}%, entries={}",
+                cnt, hits, hit_rate, entries
+            );
+        }
+
+        if let Some(cached) = self.cache.get(&cache_key).await {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            debug!("Cache hit for key: {}", cache_key);
+            return Ok(Some(cached));
+        }
 
         debug!("Fetching ABI for signature: {}", signature);
 
@@ -91,11 +117,13 @@ impl AbiClient {
         let api_response: SentioApiResponse = response.json().await?;
 
         if let Some(abi_item) = api_response.abi_item {
-            // Cache the result (only if no topics/data)
-            if topics.is_none() && data.is_none() {
-                self.cache.insert(signature.to_string(), abi_item.clone());
-            }
-            Ok(Some(abi_item))
+            // Parse abi_item string into JsonEvent
+            let json_event: JsonEvent = serde_json::from_str(&abi_item)?;
+            let json_event = Arc::new(json_event);
+
+            self.cache.insert(cache_key, json_event.clone()).await;
+
+            Ok(Some(json_event))
         } else {
             Ok(None)
         }

@@ -1,6 +1,5 @@
 use std::env;
 use anyhow::anyhow;
-use alloy::json_abi::Event as JsonEvent;
 use alloy::dyn_abi::DynSolValue;
 use tracing::{debug, info, warn};
 use sentio_sdk::{async_trait, Entity};
@@ -208,14 +207,14 @@ async fn extract_param_info(event: &EthEvent, abi_client: &AbiClient) -> anyhow:
 
     let signature = &format!("{:?}", event.log.topics()[0]);
     
-    if let Some(abi_item) = abi_client
+    if let Some(json_event) = abi_client
         .get_abi_from_signature(signature, &format!("{:?}", event.log.address()), None, None)
         .await?
     {
-        let json_event: JsonEvent = serde_json::from_str(&abi_item)?;
-        let arg_key_mappings: Vec<String> = json_event.inputs.iter().map(|input| input.name.clone()).collect();
-        let arg_types: Vec<String> = json_event.inputs.iter().map(|input| input.ty.to_string()).collect();
-        let indexed_flags: Vec<bool> = json_event.inputs.iter().map(|input| input.indexed).collect();
+        let je = json_event.as_ref();
+        let arg_key_mappings: Vec<String> = je.inputs.iter().map(|input| input.name.clone()).collect();
+        let arg_types: Vec<String> = je.inputs.iter().map(|input| input.ty.to_string()).collect();
+        let indexed_flags: Vec<bool> = je.inputs.iter().map(|input| input.indexed).collect();
         Ok((arg_key_mappings, arg_types, indexed_flags))
     } else {
         Ok((vec![], vec![], vec![]))
@@ -230,12 +229,11 @@ async fn extract_event_name(event: &EthEvent, abi_client: &AbiClient) -> anyhow:
 
     let signature = &format!("{:?}", event.log.topics()[0]);
     
-    if let Some(abi_item) = abi_client
+    if let Some(json_event) = abi_client
         .get_abi_from_signature(signature, &format!("{:?}", event.log.address()), None, None)
         .await?
     {
-        let json_event: JsonEvent = serde_json::from_str(&abi_item)?;
-        Ok(json_event.name)
+        Ok(json_event.as_ref().name.clone())
     } else {
         Ok("unknown".to_string())
     }
@@ -253,8 +251,8 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
         .get_abi_from_signature(signature, &format!("{:?}", event.log.address()), None, None)
         .await?
     {
-        Some(abi_item) => {
-            match event.decode_from_abi_str(&abi_item) {
+        Some(json_event) => {
+            match event.decode(json_event.as_ref()) {
                 Ok(decoded_event) => Ok(Some(decoded_event)),
                 Err(e) => {
                     if e.to_string().contains("data out-of-bounds")
@@ -267,19 +265,19 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
                             .iter()
                             .map(|t| format!("{:?}", t))
                             .collect();
-                        let data = format!("{:?}", event.log.data());
+                        let data_hex =  hex::encode(event.log.data().data.clone());
                         match abi_client
                             .get_abi_from_signature(
                                 signature,
                                 &format!("{:?}", event.log.address()),
                                 Some(&topics),
-                                Some(&data),
+                                Some(&data_hex),
                             )
                             .await?
                         {
-                            Some(abi_item) => {
+                            Some(json_event) => {
                                 let event_clone = event.clone();
-                                let decoded_event = event_clone.decode_from_abi_str(&abi_item)?;
+                                let decoded_event = event_clone.decode(json_event.as_ref())?;
                                 Ok(Some(decoded_event))
                             }
                             None => Err(anyhow!(

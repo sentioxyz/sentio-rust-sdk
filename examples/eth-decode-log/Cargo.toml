@@ -6,10 +6,6 @@ authors.workspace = true
 license.workspace = true
 description = "Ethereum log decoding processor using Sentio SDK"
 
-[lib]
-name = "eth_decode_log"
-path = "src/lib.rs"
-
 [[bin]]
 name = "eth-decode-log"
 path = "src/main.rs"
@@ -21,7 +17,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 hex = "0.4"
-moka = { version = "0.12.10", features = ["sync"] }
+moka = { version = "0.12.10", features = ["future"] }
 tracing = "0.1"
 alloy = {version = "1" , default-features = false, features = ["essentials"] }
 derive_builder = "0.20"

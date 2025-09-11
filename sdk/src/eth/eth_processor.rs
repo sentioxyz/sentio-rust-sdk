@@ -79,9 +79,15 @@ pub struct EthEvent {
 impl EthEvent {
     /// Decode the log using an ABI string and populate decoded_log field
     pub fn decode_from_abi_str(&self, abi_str: &str) -> Result<EthEvent> {
+        let json_event: JsonEvent = serde_json::from_str(abi_str)?;
+        self.decode(&json_event)
+    }
+
+    /// Decode the log using a pre-parsed `JsonEvent` and populate `decoded` field
+    pub fn decode(&self, json_event: &JsonEvent) -> Result<EthEvent> {
         // Catch panics from alloy decode operations and convert to errors
         let decoded_data = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.parse_log_with_alloy(abi_str)
+            self.parse_log_with_json(json_event)
         })) {
             Ok(result) => result?,
             Err(panic_payload) => {
@@ -95,54 +101,50 @@ impl EthEvent {
                 return Err(anyhow::anyhow!("Log decode failed due to panic: {}", panic_message));
             }
         };
-        
-        Ok(EthEvent{
+
+        Ok(EthEvent {
             log: self.log.clone(),
             decoded: Some(decoded_data),
         })
     }
 
-    /// Internal method to parse log with alloy - adapted from eth-decode-log example
-    fn parse_log_with_alloy(&self, abi_item: &str) -> Result<DecodedEvent> {
-        // Parse the ABI item as a JsonEvent first
-        let json_event: JsonEvent = serde_json::from_str(abi_item)?;
-        
+     
+    /// Internal method to decode a log using a pre-parsed `JsonEvent`
+    fn parse_log_with_json(&self, json_event: &JsonEvent) -> Result<DecodedEvent> {
         // Convert JsonEvent inputs to DynSolTypes for dynamic decoding
         let mut indexed_params: Vec<alloy::dyn_abi::DynSolType> = Vec::new();
         let mut non_indexed_params: Vec<alloy::dyn_abi::DynSolType> = Vec::new();
-        
+
         for param in &json_event.inputs {
-            let dyn_type = param.ty.to_string().parse::<alloy::dyn_abi::DynSolType>()
+            let dyn_type = param
+                .ty
+                .to_string()
+                .parse::<alloy::dyn_abi::DynSolType>()
                 .map_err(|e| anyhow::anyhow!("Failed to parse type '{}': {}", param.ty, e))?;
-            
+
             if param.indexed {
                 indexed_params.push(dyn_type);
             } else {
                 non_indexed_params.push(dyn_type);
             }
         }
-        
+
         // Create the body type as a tuple of non-indexed parameters
         // Always use a tuple, even for a single parameter, to match decoder expectations
         let body_type = alloy::dyn_abi::DynSolType::Tuple(non_indexed_params);
 
-        let topics: Vec<B256> = self.log.topics().iter()
-            .map(|topic| B256::from_slice(topic.as_slice()))
-            .collect();
-        
         // Create DynSolEvent with proper parameters (topic_0, indexed_types, body_type)
         let dyn_event = DynSolEvent::new_unchecked(
-            topics.first().copied(),
+            self.log.topics().first().copied(),
             indexed_params,
-            body_type
+            body_type,
         );
 
-        let data = self.log.data().data.to_vec();
-        let log_data = LogData::new(topics, data.into())
-            .ok_or_else(|| anyhow::anyhow!("Invalid log data"))?;
-
+        let log_data = &self.log.inner.data;
         // Decode the log using alloy's dynamic ABI decoding
-        dyn_event.decode_log_data(&log_data).map_err(|e| anyhow::anyhow!("Failed to decode log: {}", e))
+        dyn_event
+            .decode_log_data(log_data)
+            .map_err(|e| anyhow::anyhow!("Failed to decode log: {}", e))
     }
 }
 

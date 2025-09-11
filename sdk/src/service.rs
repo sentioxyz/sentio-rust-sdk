@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use anyhow::Result;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
@@ -12,9 +13,9 @@ use crate::processor::{
     StartRequest, UpdateTemplatesRequest,
 };
 
-#[derive(Clone)]
 pub struct ProcessorService {
     pub plugin_manager: Arc<PluginManager>,
+    execution_config: crate::processor::ExecutionConfig,
 }
 
 impl Default for ProcessorService {
@@ -23,9 +24,34 @@ impl Default for ProcessorService {
     }
 }
 
+impl Clone for ProcessorService {
+    fn clone(&self) -> Self {
+        Self {
+            plugin_manager: Arc::clone(&self.plugin_manager),
+            execution_config: self.execution_config.clone(),
+        }
+    }
+}
+
 impl ProcessorService {
     pub fn new() -> Self {
-        Self { plugin_manager: Arc::new(PluginManager::default()) }
+        let execution_config = crate::processor::ExecutionConfig {
+            sequential: false,
+            force_exact_block_time: false,
+            handler_order_inside_transaction: 0,
+            process_binding_timeout: 600,
+            skip_start_block_validation: false,
+            rpc_retry_times: 3,
+            eth_abi_decoder_config: None,
+        };
+        Self { plugin_manager: Arc::new(PluginManager::default()), execution_config }
+    }
+
+    pub fn new_with_plugin_and_config(
+        plugin_manager: Arc<PluginManager>,
+        execution_config: crate::processor::ExecutionConfig,
+    ) -> Self {
+        Self { plugin_manager, execution_config }
     }
 
     pub fn register_processor<T, P>(&self, processor: T)
@@ -43,6 +69,8 @@ impl ProcessorService {
     pub fn set_gql_schema<S: Into<String>>(&self, schema: S) {
         self.plugin_manager.set_gql_schema(schema);
     }
+
+    // No setter for execution_config to keep it immutable after service start.
 }
 
 #[cfg(test)]
@@ -66,10 +94,6 @@ mod tests {
 
 #[tonic::async_trait]
 impl ProcessorV3 for ProcessorService {
-    type ProcessBindingsStreamStream = std::pin::Pin<
-        Box<dyn tokio_stream::Stream<Item = Result<ProcessStreamResponseV3, Status>> + Send>,
-    >;
-
     async fn start(&self, request: Request<StartRequest>) -> Result<Response<()>, Status> {
         debug!("Received start request from client: {:?}", request.remote_addr());
         let req = request.into_inner();
@@ -94,15 +118,7 @@ impl ProcessorV3 for ProcessorService {
 
         let mut response = ProcessConfigResponse {
             config: None,
-            execution_config: Some(crate::processor::ExecutionConfig {
-                sequential: false,
-                force_exact_block_time: false,
-                handler_order_inside_transaction: 0,
-                process_binding_timeout: 30,
-                skip_start_block_validation: false,
-                rpc_retry_times: 3,
-                eth_abi_decoder_config: None,
-            }),
+            execution_config: Some(self.execution_config.clone()),
             contract_configs: handler_config.contract_configs,
             template_instances: vec![],
             account_configs: handler_config.account_configs,
@@ -135,6 +151,10 @@ impl ProcessorV3 for ProcessorService {
         Ok(Response::new(()))
     }
 
+    type ProcessBindingsStreamStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<ProcessStreamResponseV3, Status>> + Send>,
+    >;
+
     async fn process_bindings_stream(
         &self,
         request: Request<tonic::Streaming<ProcessStreamRequest>>,
@@ -153,6 +173,8 @@ impl ProcessorV3 for ProcessorService {
 
         // Clone the plugin manager Arc for sharing between tasks
         let plugin_manager = self.plugin_manager.clone();
+        // Snapshot timeout to avoid capturing self in spawned task
+        let timeout_secs_snapshot = (self.execution_config.process_binding_timeout as u64).max(1);
 
         tokio::spawn(async move {
             // new session
@@ -176,13 +198,14 @@ impl ProcessorV3 for ProcessorService {
                                     let pm = plugin_manager.clone();
                                     let db = db_backend.clone();
                                     let tx_resp = tx_clone.clone();
+                                    let timeout_secs = timeout_secs_snapshot;
                                     // Spawn per-binding processing so the stream keeps receiving next requests
                                     tokio::spawn(async move {
                                         // Create RuntimeContext with the tx clone for event logging and empty metadata
                                         let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_resp.clone(), process_id, db.clone());
                                         // Process and send response
-                                        let response = match pm.process(&binding, runtime_context).await {
-                                            Ok(result) => {
+                                        let response = match tokio::time::timeout(Duration::from_secs(timeout_secs), pm.process(&binding, runtime_context)).await {
+                                            Ok(Ok(result)) => {
                                                 debug!(
                                                     "Successfully processed binding for chain '{}'",
                                                     binding.chain_id
@@ -192,7 +215,7 @@ impl ProcessorV3 for ProcessorService {
                                                     value: Some(crate::processor::process_stream_response_v3::Value::Result(result)),
                                                 }
                                             }
-                                            Err(e) => {
+                                            Ok(Err(e)) => {
                                                 error!(
                                                     "Failed to process binding for chain '{}': {}",
                                                     binding.chain_id, e
@@ -201,6 +224,21 @@ impl ProcessorV3 for ProcessorService {
                                                 err_result.states = Some(crate::processor::StateResult {
                                                     config_updated: false,
                                                     error: Some(e.to_string()),
+                                                });
+                                                ProcessStreamResponseV3 {
+                                                    process_id,
+                                                    value: Some(crate::processor::process_stream_response_v3::Value::Result(err_result)),
+                                                }
+                                            }
+                                            Err(_elapsed) => {
+                                                error!(
+                                                    "Processing binding timed out for chain '{}' after {}s",
+                                                    binding.chain_id, timeout_secs
+                                                );
+                                                let mut err_result = crate::processor::ProcessResult::default();
+                                                err_result.states = Some(crate::processor::StateResult {
+                                                    config_updated: false,
+                                                    error: Some(format!("user processor timeout after {}s", timeout_secs)),
                                                 });
                                                 ProcessStreamResponseV3 {
                                                     process_id,

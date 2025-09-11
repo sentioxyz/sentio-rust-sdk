@@ -24,6 +24,10 @@ pub struct ServerArgs {
     #[arg(long, default_value = "0.0.0.0")]
     pub host: String,
 
+    /// Process binding timeout in seconds (default 600). Also via env PROCESS_BINDING_TIMEOUT or legacy PROCESS_TIMEOUT_SECS
+    #[arg(long, default_value = "600")]
+    pub process_binding_timeout: u64,
+
     /// Port for profiling HTTP server
     #[cfg(feature = "profiling")]
     #[arg(long, default_value = "4040")]
@@ -38,6 +42,7 @@ pub struct ServerArgs {
 pub struct Server {
     args: Option<ServerArgs>,
     pub service: ProcessorService,
+    execution_config: Option<crate::processor::ExecutionConfig>,
 }
 
 impl Server {
@@ -46,6 +51,7 @@ impl Server {
         Self {
             args: None,
             service: ProcessorService::new(),
+            execution_config: None,
         }
     }
 
@@ -65,6 +71,11 @@ impl Server {
     /// Set the global GraphQL schema that the server will advertise in get_config
     pub fn set_gql_schema(&self, schema: &'static str) {
         self.service.set_gql_schema(schema);
+    }
+
+    /// Configure execution settings. If `process_binding_timeout` is 0, the value from CLI/env/default is used.
+    pub fn set_execution_config(&mut self, config: crate::processor::ExecutionConfig) {
+        self.execution_config = Some(config);
     }
 
     /// Initialize logging based on debug flag
@@ -106,118 +117,16 @@ impl Server {
     }
 
     /// Internal method that returns Result for error handling
-    fn try_start(self) -> Result<()> {
+    fn try_start(mut self) -> Result<()> {
         // Parse command line arguments or use provided args
         let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
-
         // Initialize logging
         Self::init_logging(args.debug);
-
-        let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-
-        info!("🚀 Starting Sentio Processor server on {}", addr);
-        debug!("Server configuration: {:?}", args);
-        info!("📊 gRPC compression enabled: gzip");
-        // Note: We can't easily get processor count here without blocking on async lock
-        // This will be logged during init() call instead
-        info!("🔧 Starting server with plugin manager initialized");
-
-        #[cfg(feature = "profiling")]
-        info!("🔥 Profiling enabled on port {}", args.profiling_port);
-
+        // Preserve parsed args for async start
+        self.args = Some(args);
         // Create and block on the Tokio runtime
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            // Start profiling server if enabled
-            #[cfg(feature = "profiling")]
-            {
-                let profiler =
-                    crate::core::profiling::Profiler::new().with_http_endpoint(args.profiling_port);
-
-                tokio::spawn(async move {
-                    if let Err(e) = profiler.start_http_server().await {
-                        tracing::error!("Failed to start profiling server: {}", e);
-                    }
-                });
-            }
-
-            TonicServer::builder()
-                .add_service(
-                    TonicProcessorV3Server::new(self.service.clone())
-                        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                        .send_compressed(tonic::codec::CompressionEncoding::Gzip),
-                )
-                .serve(addr)
-                .await
-        })?;
-
-        Ok(())
-    }
-
-    /// Start the gRPC server with graceful shutdown support (blocking)
-    /// This method creates its own Tokio runtime and blocks until the server stops
-    /// Parses command line arguments for port and debug settings
-    /// Logs any errors and exits the process if startup fails
-    pub fn start_with_shutdown<F>(self, shutdown_signal: F)
-    where
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        if let Err(e) = self.try_start_with_shutdown(shutdown_signal) {
-            error!("Failed to start server with shutdown: {}", e);
-            std::process::exit(1);
-        }
-    }
-
-    /// Internal method for shutdown support that returns Result for error handling
-    fn try_start_with_shutdown<F>(self, shutdown_signal: F) -> Result<()>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
-
-        // Initialize logging
-        Self::init_logging(args.debug);
-
-        let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-
-        info!(
-            "🚀 Starting Sentio Processor server on {} with shutdown support",
-            addr
-        );
-        debug!("Server configuration: {:?}", args);
-        info!("📊 gRPC compression enabled: gzip");
-
-        #[cfg(feature = "profiling")]
-        info!("🔥 Profiling enabled on port {}", args.profiling_port);
-
-        // Create and block on the Tokio runtime
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            // Start profiling server if enabled
-            #[cfg(feature = "profiling")]
-            {
-                let profiler =
-                    crate::core::profiling::Profiler::new().with_http_endpoint(args.profiling_port);
-
-                tokio::spawn(async move {
-                    if let Err(e) = profiler.start_http_server().await {
-                        tracing::error!("Failed to start profiling server: {}", e);
-                    }
-                });
-            }
-
-            TonicServer::builder()
-                .add_service(
-                    TonicProcessorV3Server::new(self.service.clone())
-                        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                        .send_compressed(tonic::codec::CompressionEncoding::Gzip),
-                )
-                .serve_with_shutdown(addr, shutdown_signal)
-                .await
-        })?;
-
-        Ok(())
+        rt.block_on(self.start_async())
     }
 
     /// Start the gRPC server asynchronously (for use within existing async contexts)
@@ -230,6 +139,8 @@ impl Server {
         // Initialize logging
         Self::init_logging(args.debug);
 
+        // execution_config will be constructed below before serving
+
         let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
 
         info!("🚀 Starting Sentio Processor server on {}", addr);
@@ -254,65 +165,44 @@ impl Server {
             });
         }
 
+        // Construct execution config once (override > env > cli > default)
+        let default_timeout = 600i32;
+        let env_timeout = std::env::var("PROCESS_BINDING_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<i32>().ok())
+            .or_else(|| std::env::var("PROCESS_TIMEOUT_SECS").ok().and_then(|s| s.parse::<i32>().ok()));
+        let cli_timeout = args.process_binding_timeout as i32;
+        let selected_timeout = env_timeout.unwrap_or(cli_timeout);
+        let selected_timeout = if selected_timeout > 0 { selected_timeout } else { default_timeout };
+        let exec_cfg = if let Some(mut cfg) = self.execution_config.clone() {
+            if cfg.process_binding_timeout <= 0 {
+                cfg.process_binding_timeout = selected_timeout;
+            }
+            cfg
+        } else {
+            crate::processor::ExecutionConfig {
+                sequential: false,
+                force_exact_block_time: false,
+                handler_order_inside_transaction: 0,
+                process_binding_timeout: selected_timeout,
+                skip_start_block_validation: false,
+                rpc_retry_times: 3,
+                eth_abi_decoder_config: None,
+            }
+        };
+
+        let service = ProcessorService::new_with_plugin_and_config(
+            self.service.plugin_manager.clone(),
+            exec_cfg,
+        );
+
         TonicServer::builder()
             .add_service(
-                TonicProcessorV3Server::new(self.service.clone())
+                TonicProcessorV3Server::new(service)
                     .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
                     .send_compressed(tonic::codec::CompressionEncoding::Gzip),
             )
             .serve(addr)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Start the gRPC server asynchronously with shutdown support
-    /// This is the async version for when you already have a Tokio runtime
-    /// Returns Result for manual error handling (unlike the blocking start methods)
-    pub async fn start_async_with_shutdown<F>(self, shutdown_signal: F) -> Result<()>
-    where
-        F: Future<Output = ()>,
-    {
-        // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
-
-        // Initialize logging
-        Self::init_logging(args.debug);
-
-        let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-
-        info!(
-            "🚀 Starting Sentio Processor server on {} with shutdown support",
-            addr
-        );
-        debug!("Server configuration: {:?}", args);
-        info!("📊 gRPC compression enabled: gzip");
-
-        #[cfg(feature = "profiling")]
-        {
-            info!("🔥 Profiling enabled on port {}", args.profiling_port);
-        }
-
-        // Start profiling server if enabled
-        #[cfg(feature = "profiling")]
-        {
-            let profiler =
-                crate::core::profiling::Profiler::new().with_http_endpoint(args.profiling_port);
-
-            tokio::spawn(async move {
-                if let Err(e) = profiler.start_http_server().await {
-                    tracing::error!("Failed to start profiling server: {}", e);
-                }
-            });
-        }
-
-        TonicServer::builder()
-            .add_service(
-                TonicProcessorV3Server::new(self.service.clone())
-                    .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                    .send_compressed(tonic::codec::CompressionEncoding::Gzip),
-            )
-            .serve_with_shutdown(addr, shutdown_signal)
             .await?;
 
         Ok(())

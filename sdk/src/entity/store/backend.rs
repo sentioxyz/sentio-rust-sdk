@@ -1,6 +1,7 @@
 //! Storage backend abstraction for entity stores
 
 use crate::core::RUNTIME_CONTEXT;
+use crate::core::benchmark;
 use crate::db_request::{DbDelete, DbFilter, DbGet, DbList, DbUpsert, Op};
 use crate::{DbRequest, db_response};
 use anyhow::Result;
@@ -72,14 +73,15 @@ impl RemoteBackend {
     }
     async fn send_async(&self, request: DbRequest) -> Result<Option<db_response::Value>> {
         let op_id = request.op_id;
+        let start = std::time::Instant::now();
         self.send(request).await?;
 
         let (resolve, promise) = async_promise::channel::<Option<db_response::Value>>();
         self.promises.insert(op_id, resolve);
         let result = promise.wait().await;
 
-        if result.is_some() {
-            let ret = result.unwrap();
+        benchmark::record_db_time(start.elapsed());
+        if let Some(ret) = result {
             return Ok(ret.clone());
         }
         Ok(None)

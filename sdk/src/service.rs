@@ -107,6 +107,8 @@ impl ProcessorV3 for ProcessorService {
     ) -> Result<Response<ProcessConfigResponse>, Status> {
         debug!("Received get_config request");
 
+        crate::core::benchmark::init_if_enabled();
+
         // Build handler configs using existing plugin mechanism
         let mut handler_config = ConfigureHandlersResponse {
             contract_configs: vec![],
@@ -176,6 +178,10 @@ impl ProcessorV3 for ProcessorService {
         // Snapshot timeout to avoid capturing self in spawned task
         let timeout_secs_snapshot = (self.execution_config.process_binding_timeout as u64).max(1);
 
+        // Allocate an id for this bindings stream and mark open for benchmarking
+        let stream_id = crate::core::benchmark::new_stream_id();
+        crate::core::benchmark::on_stream_open(stream_id);
+
         tokio::spawn(async move {
             // new session
             let db_backend =
@@ -199,11 +205,12 @@ impl ProcessorV3 for ProcessorService {
                                     let db = db_backend.clone();
                                     let tx_resp = tx_clone.clone();
                                     let timeout_secs = timeout_secs_snapshot;
+                                    // Track handler concurrency within this stream
+                                    crate::core::benchmark::on_binding_spawn(stream_id);
                                     // Spawn per-binding processing so the stream keeps receiving next requests
                                     tokio::spawn(async move {
-                                        // Create RuntimeContext with the tx clone for event logging and empty metadata
                                         let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_resp.clone(), process_id, db.clone());
-                                        // Process and send response
+                                        let start = std::time::Instant::now();
                                         let response = match tokio::time::timeout(Duration::from_secs(timeout_secs), pm.process(&binding, runtime_context)).await {
                                             Ok(Ok(result)) => {
                                                 debug!(
@@ -246,9 +253,9 @@ impl ProcessorV3 for ProcessorService {
                                                 }
                                             }
                                         };
-                                        // session ended, reset the db
+                                        crate::core::benchmark::record_handler_time(start.elapsed());
+                                        crate::core::benchmark::on_binding_done(stream_id);
                                         db.reset();
-                                        // this is the last response to end the session.
                                         if let Err(e) = tx_resp.send(Ok(response)).await {
                                             error!("Failed to send response: {}", e);
                                         }
@@ -270,6 +277,8 @@ impl ProcessorV3 for ProcessorService {
                     }
                 }
             }
+            // Stream loop ended, mark stream closed for benchmarking
+            crate::core::benchmark::on_stream_close(stream_id);
             debug!("Stream processing task completed");
         });
 

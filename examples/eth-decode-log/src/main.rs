@@ -4,6 +4,7 @@ use sentio_sdk::{ExecutionConfig, Server};
 mod abi_client;
 mod processor;
 mod generated;
+mod bench;
 use processor::*;
 
 fn main()  {

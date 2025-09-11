@@ -2,7 +2,6 @@ use crate::processor::processor_v3_server::ProcessorV3Server as TonicProcessorV3
 use crate::service::ProcessorService;
 use anyhow::Result;
 use clap::Parser;
-use std::future::Future;
 use std::net::SocketAddr;
 use tonic::transport::Server as TonicServer;
 use tracing::{debug, error, info};
@@ -122,6 +121,7 @@ impl Server {
         let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
         // Initialize logging
         Self::init_logging(args.debug);
+
         // Preserve parsed args for async start
         self.args = Some(args);
         // Create and block on the Tokio runtime
@@ -138,6 +138,9 @@ impl Server {
 
         // Initialize logging
         Self::init_logging(args.debug);
+
+        // Initialize benchmark reporter (requires Tokio runtime; safe here)
+        crate::core::benchmark::init_if_enabled();
 
         // execution_config will be constructed below before serving
 

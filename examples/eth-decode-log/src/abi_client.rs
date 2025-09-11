@@ -3,8 +3,10 @@ use anyhow::Result;
 use moka::future::Cache;
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-use tracing::{debug, error, info};
+use std::sync::Arc;
+use tracing::{debug, error};
+use std::time::Instant;
+use crate::bench;
 
 #[derive(Debug, Deserialize)]
 struct SentioApiResponse {
@@ -16,9 +18,7 @@ pub struct AbiClient {
     client: Client,
     base_url: String,
     chain_id: String,
-    cache: Cache<String, Arc<JsonEvent>>,
-    request_count: AtomicU64,
-    cache_hits: AtomicU64,
+    cache: Cache<String, Option<Arc<JsonEvent>>>,
 }
 
 impl AbiClient {
@@ -28,8 +28,6 @@ impl AbiClient {
             base_url: format!("{}/api/v1/solidity/signature", sentio_host),
             chain_id,
             cache: Cache::new(1000_000),
-            request_count: AtomicU64::new(0),
-            cache_hits: AtomicU64::new(0),
         }
     }
 
@@ -50,22 +48,16 @@ impl AbiClient {
             signature.to_string()
         };
 
-        // Increment request counter and print stats every 1000 calls
-        let cnt = self.request_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if cnt % 1000 == 0 {
-            let hits = self.cache_hits.load(Ordering::Relaxed);
-            let hit_rate = if cnt > 0 { (hits as f64) / (cnt as f64) * 100.0 } else { 0.0 };
-            let entries = self.cache.entry_count();
-            info!(
-                "AbiClient cache stats: requests={}, hits={}, hit_rate={:.2}%, entries={}",
-                cnt, hits, hit_rate, entries
-            );
-        }
+        // Mark a total call and update cache size snapshot
+        bench::mark_call();
+        bench::update_cache_size(self.cache.entry_count());
 
-        if let Some(cached) = self.cache.get(&cache_key).await {
-            self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            debug!("Cache hit for key: {}", cache_key);
-            return Ok(Some(cached));
+        // Measure cache lookup time
+        let cache_start = Instant::now();
+        if let Some(cached_opt) = self.cache.get(&cache_key).await {
+            bench::record_cache_hit(cache_start.elapsed());
+            debug!("Cache hit for key: {} (present={})", cache_key, cached_opt.is_some());
+            return Ok(cached_opt.clone());
         }
 
         debug!("Fetching ABI for signature: {}", signature);
@@ -98,6 +90,7 @@ impl AbiClient {
             all_params.push(("data", data));
         }
 
+        let api_start = Instant::now();
         let response = self
             .client
             .get(&self.base_url)
@@ -106,25 +99,37 @@ impl AbiClient {
             .await?;
 
         if !response.status().is_success() {
-            error!(
-                "Failed to fetch ABI for signature {}: {}",
-                signature,
-                response.status()
-            );
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                error!(
+                    "Failed to fetch ABI for signature {}: 404 Not Found (cached negative)",
+                    signature
+                );
+                // Only cache negative result on 404
+                self.cache.insert(cache_key, None).await;
+            } else {
+                error!(
+                    "Failed to fetch ABI for signature {}: {} (not cached)",
+                    signature,
+                    status
+                );
+            }
             return Ok(None);
         }
 
         let api_response: SentioApiResponse = response.json().await?;
+        bench::record_api_call(api_start.elapsed());
 
         if let Some(abi_item) = api_response.abi_item {
             // Parse abi_item string into JsonEvent
             let json_event: JsonEvent = serde_json::from_str(&abi_item)?;
             let json_event = Arc::new(json_event);
 
-            self.cache.insert(cache_key, json_event.clone()).await;
+            self.cache.insert(cache_key, Some(json_event.clone())).await;
 
             Ok(Some(json_event))
         } else {
+            self.cache.insert(cache_key,None).await;
             Ok(None)
         }
     }

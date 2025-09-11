@@ -1,4 +1,5 @@
 use std::env;
+use std::time::Instant;
 use anyhow::anyhow;
 use alloy::dyn_abi::DynSolValue;
 use tracing::{debug, info, warn};
@@ -10,6 +11,7 @@ use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::entity::ID;
 use crate::abi_client::AbiClient;
 use crate::generated::entities::DecodedLogBuilder;
+use crate::bench;
 
 
 pub struct LogDecoderProcessor {
@@ -62,16 +64,20 @@ impl EventMarker for AllEventsMarker {
 #[async_trait]
 impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
     async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
+        let handler_start = Instant::now();
         // Can use context directly in async closure now!
         let ctx_chain_id = ctx.chain_id();
         let ctx_transaction_hash = ctx.transaction_hash();
 
         debug!("processing {}, {}", ctx_chain_id, ctx_transaction_hash);
 
-         let log_id =  format!("{}_{}_{}", ctx.block_number(), ctx.transaction_index(), ctx.log_index());
+        let log_id =  format!("{}_{}_{}", ctx.block_number(), ctx.transaction_index(), ctx.log_index());
 
+        let other_start : Instant;
         match decode_log(&event, &self.abi_client).await {
-            Ok(Some(event_with_decoded)) => {
+            Ok(event_with_decoded) => {
+                bench::record_decode(handler_start.elapsed());
+                other_start = Instant::now();
                 // Access the decoded data directly from the event
                 if let Some(decoded) = &event_with_decoded.decoded {
                     // Pull parameter names and types from ABI to map values by param name
@@ -119,10 +125,9 @@ impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
                     debug!("Event was processed but no decoded data available: {}", log_id);
                 }
             }
-            Ok(None) => {
-                debug!("No ABI found for log: {}", log_id);
-            }
             Err(e) => {
+                bench::record_decode_failed(handler_start.elapsed());
+                other_start = Instant::now();
                 // Create event logger to emit structured error event
                 let event_logger = ctx.base_context().event_logger();
                 
@@ -156,6 +161,9 @@ impl EthEventHandler<AllEventsMarker> for LogDecoderProcessor {
                 warn!("Failed to decode log {}: {}", log_id, e);
             }
         }
+        bench::record_handler(handler_start.elapsed());
+        bench::record_other(other_start.elapsed());
+        bench::print_if_due();
     }
 }
 
@@ -239,7 +247,7 @@ async fn extract_event_name(event: &EthEvent, abi_client: &AbiClient) -> anyhow:
     }
 }
 
-async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<Option<EthEvent>> {
+async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<EthEvent> {
     if event.log.topics().is_empty() {
         return Err(anyhow!("Log does not contain a valid signature topic"));
     }
@@ -247,13 +255,15 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
     let signature = &format!("{:?}", event.log.topics()[0]);
 
     // Try to get ABI from signature
-    match abi_client
+     match abi_client
         .get_abi_from_signature(signature, &format!("{:?}", event.log.address()), None, None)
         .await?
     {
         Some(json_event) => {
             match event.decode(json_event.as_ref()) {
-                Ok(decoded_event) => Ok(Some(decoded_event)),
+                Ok(decoded_event) => {
+                    Ok(decoded_event)
+                },
                 Err(e) => {
                     if e.to_string().contains("data out-of-bounds")
                         || e.to_string().contains("insufficient")
@@ -278,7 +288,7 @@ async fn decode_log(event: &EthEvent, abi_client: &AbiClient) -> anyhow::Result<
                             Some(json_event) => {
                                 let event_clone = event.clone();
                                 let decoded_event = event_clone.decode(json_event.as_ref())?;
-                                Ok(Some(decoded_event))
+                                Ok(decoded_event)
                             }
                             None => Err(anyhow!(
                                 "No ABI found for signature {} after retry",

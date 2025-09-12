@@ -148,7 +148,6 @@ impl Server {
 
         info!("🚀 Starting Sentio Processor server on {}", addr);
         debug!("Server configuration: {:?}", args);
-        info!("📊 gRPC compression enabled: gzip");
 
         #[cfg(feature = "profiling")]
         {
@@ -173,10 +172,18 @@ impl Server {
         let env_timeout = std::env::var("PROCESS_BINDING_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<i32>().ok())
-            .or_else(|| std::env::var("PROCESS_TIMEOUT_SECS").ok().and_then(|s| s.parse::<i32>().ok()));
+            .or_else(|| {
+                std::env::var("PROCESS_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<i32>().ok())
+            });
         let cli_timeout = args.process_binding_timeout as i32;
         let selected_timeout = env_timeout.unwrap_or(cli_timeout);
-        let selected_timeout = if selected_timeout > 0 { selected_timeout } else { default_timeout };
+        let selected_timeout = if selected_timeout > 0 {
+            selected_timeout
+        } else {
+            default_timeout
+        };
         let exec_cfg = if let Some(mut cfg) = self.execution_config.clone() {
             if cfg.process_binding_timeout <= 0 {
                 cfg.process_binding_timeout = selected_timeout;
@@ -199,12 +206,18 @@ impl Server {
             exec_cfg,
         );
 
+        let mut server = TonicProcessorV3Server::new(service)
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip);
+        if std::env::var("GRPC_ENABLE_COMPRESS").is_ok()
+            && std::env::var("GRPC_ENABLE_COMPRESS")? == "true"
+        {
+            server = server.send_compressed(tonic::codec::CompressionEncoding::Gzip);
+        }
+
         TonicServer::builder()
-            .add_service(
-                TonicProcessorV3Server::new(service)
-                    .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                    .send_compressed(tonic::codec::CompressionEncoding::Gzip),
-            )
+            .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
+            .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
+            .add_service(server)
             .serve(addr)
             .await?;
 

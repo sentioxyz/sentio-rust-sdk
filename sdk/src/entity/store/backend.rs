@@ -74,10 +74,15 @@ impl RemoteBackend {
     async fn send_async(&self, request: DbRequest) -> Result<Option<db_response::Value>> {
         let op_id = request.op_id;
         let start = std::time::Instant::now();
-        self.send(request).await?;
-
         let (resolve, promise) = async_promise::channel::<Option<db_response::Value>>();
         self.promises.insert(op_id, resolve);
+
+        if let Err(e) = self.send(request).await {
+            // Clean up resolver on send failure to avoid leaks
+            self.promises.remove(&op_id);
+            return Err(e);
+        }
+
         let result = promise.wait().await;
 
         benchmark::record_db_time(start.elapsed());

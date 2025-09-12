@@ -5,6 +5,7 @@ members = [
     "sdk",
     "examples/eth-basic",
     "examples/eth-decode-log",
+    "examples/bench",
 ]
 
 [workspace.package]
@@ -20,11 +21,11 @@ categories = ["development-tools", "web-programming"]
 
 # Performance-optimized build profiles
 [profile.release]
-opt-level = 3           # Maximum optimization
-lto = "fat"            # Link-time optimization for better performance
-codegen-units = 1      # Single codegen unit for better optimization
-panic = "abort"        # Smaller binary, faster panic handling
-strip = true           # Remove debug symbols for smaller binaries
+#opt-level = 3           # Maximum optimization
+#lto = "fat"            # Link-time optimization for better performance
+#codegen-units = 1      # Single codegen unit for better optimization
+#panic = "abort"        # Smaller binary, faster panic handling
+#strip = true           # Remove debug symbols for smaller binaries
 
 [profile.release-with-debug]
 inherits = "release"

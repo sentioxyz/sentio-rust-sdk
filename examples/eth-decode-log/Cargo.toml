@@ -10,6 +10,10 @@ description = "Ethereum log decoding processor using Sentio SDK"
 name = "eth-decode-log"
 path = "src/main.rs"
 
+[[bin]]
+name = "eth-decode-log-prof"
+path = "src/profile.rs"
+
 [dependencies]
 sentio-sdk = { path = "../../sdk", features = ["benchmark"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -21,6 +25,10 @@ moka = { version = "0.12.10", features = ["future"] }
 tracing = "0.1"
 alloy = {version = "1" , default-features = false, features = ["essentials"] }
 derive_builder = "0.20"
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+tonic = { version = "0.14.1", features = ["gzip"] }
+prost-types = "0.14.1"
 
 [build-dependencies]
 sentio-cli = { path = "../../cli" }

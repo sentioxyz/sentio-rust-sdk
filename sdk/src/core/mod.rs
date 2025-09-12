@@ -22,6 +22,7 @@ pub mod benchmark {
     pub fn on_binding_done(_stream_id: i32) {}
     pub fn record_handler_time(_dur: std::time::Duration) {}
     pub fn record_db_time(_dur: std::time::Duration) {}
+    pub fn record_receive_time(_dur: std::time::Duration) {}
 }
 
 #[cfg(feature = "profiling")]

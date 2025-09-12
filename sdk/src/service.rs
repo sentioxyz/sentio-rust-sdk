@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use anyhow::Result;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
@@ -163,7 +163,10 @@ impl ProcessorV3 for ProcessorService {
     ) -> Result<Response<Self::ProcessBindingsStreamStream>, Status> {
         use crate::processor::process_stream_request;
         use tokio_stream::{wrappers::ReceiverStream, StreamExt};
-
+        // Allocate an id for this bindings stream and mark open for benchmarking
+        let stream_id = crate::core::benchmark::new_stream_id();
+        crate::core::benchmark::on_stream_open(stream_id);
+        let mut received_start = Instant::now();
         debug!(
             "Starting process_bindings_stream from client: {:?}",
             request.remote_addr()
@@ -178,15 +181,12 @@ impl ProcessorV3 for ProcessorService {
         // Snapshot timeout to avoid capturing self in spawned task
         let timeout_secs_snapshot = (self.execution_config.process_binding_timeout as u64).max(1);
 
-        // Allocate an id for this bindings stream and mark open for benchmarking
-        let stream_id = crate::core::benchmark::new_stream_id();
-        crate::core::benchmark::on_stream_open(stream_id);
-
         tokio::spawn(async move {
             // new session
             let db_backend =
                 Arc::new(crate::entity::store::backend::Backend::remote());
             while let Some(stream_request) = inbound_stream.next().await {
+                crate::core::benchmark::record_receive_time(received_start.elapsed());
                 match stream_request {
                     Ok(req) => {
                         debug!(
@@ -211,6 +211,9 @@ impl ProcessorV3 for ProcessorService {
                                     tokio::spawn(async move {
                                         let runtime_context = crate::core::RuntimeContext::new_with_empty_metadata(tx_resp.clone(), process_id, db.clone());
                                         let start = std::time::Instant::now();
+                                        let setup_time = start.elapsed();
+                                        
+                                        let process_start = std::time::Instant::now();
                                         let response = match tokio::time::timeout(Duration::from_secs(timeout_secs), pm.process(&binding, runtime_context)).await {
                                             Ok(Ok(result)) => {
                                                 debug!(
@@ -253,12 +256,29 @@ impl ProcessorV3 for ProcessorService {
                                                 }
                                             }
                                         };
-                                        crate::core::benchmark::record_handler_time(start.elapsed());
-                                        crate::core::benchmark::on_binding_done(stream_id);
-                                        db.reset();
+                                        let process_time = process_start.elapsed();
+                                        
+                                        let send_start = std::time::Instant::now();
                                         if let Err(e) = tx_resp.send(Ok(response)).await {
                                             error!("Failed to send response: {}", e);
                                         }
+                                        let send_time = send_start.elapsed();
+                                        let total_time = start.elapsed();
+                                        
+                                        // Enhanced timing instrumentation
+                                        if std::env::var("SHOW_DETAILED_TIMING").is_ok() {
+                                            debug!(
+                                                "Binding timing: setup={}μs, process={}μs, send={}μs, total={}μs",
+                                                setup_time.as_micros(),
+                                                process_time.as_micros(),
+                                                send_time.as_micros(),
+                                                total_time.as_micros()
+                                            );
+                                        }
+                                        
+                                        crate::core::benchmark::record_handler_time(total_time);
+                                        crate::core::benchmark::on_binding_done(stream_id);
+                                        received_start = Instant::now();
                                     });
                                 }
                                 process_stream_request::Value::DbResult(db_result) => {

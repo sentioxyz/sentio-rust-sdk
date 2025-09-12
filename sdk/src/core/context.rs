@@ -111,7 +111,7 @@ impl BaseContext {
 
     /// Create a new pure Event Logger
     pub fn event_logger(&self) -> EventLogger {
-        crate::core::event_logger::EventLogger::new()
+        EventLogger::new()
     }
 
     /// Create a new pure Meter

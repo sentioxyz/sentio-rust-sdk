@@ -1100,6 +1100,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
+name = "bench"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "hex",
+ "prost-types",
+ "sentio-sdk",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "bigdecimal"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2149,11 +2165,15 @@ dependencies = [
  "derive_builder",
  "hex",
  "moka",
+ "prost-types",
  "reqwest 0.12.23",
  "sentio-cli",
  "sentio-sdk",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
  "tracing",
 ]
 
@@ -2504,15 +2524,6 @@ checksum = "7cd915d99f24784cdc19fd37ef22b97e3ff0ae756c7e492e9fbfe897d61e2aec"
 dependencies = [
  "indenter",
  "once_cell",
-]
-
-[[package]]
-name = "faster-hex"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "239f7bfb930f820ab16a9cd95afc26f88264cf6905c960b340a615384aa3338a"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -5493,7 +5504,6 @@ dependencies = [
 name = "sentio-sdk"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "alloy",
  "anyhow",
  "async-promise",
@@ -5506,7 +5516,6 @@ dependencies = [
  "convert_case",
  "dashmap",
  "derive_builder",
- "faster-hex",
  "futures",
  "graphql-parser",
  "hex",
@@ -5517,7 +5526,6 @@ dependencies = [
  "rust-codegen",
  "serde",
  "serde_json",
- "smallvec",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

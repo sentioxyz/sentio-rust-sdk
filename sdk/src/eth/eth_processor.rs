@@ -3,7 +3,6 @@ use crate::eth::{EthEventHandler, EventMarker};
 use crate::{AddressType, EthFetchConfig, EthPlugin};
 use alloy::dyn_abi::{DecodedEvent, DynSolEvent};
 use alloy::json_abi::Event as JsonEvent;
-use alloy::primitives::{LogData, B256};
 use alloy::rpc::types::Log;
 use anyhow::Result;
 use chrono::prelude::*;
@@ -108,7 +107,7 @@ impl EthEvent {
         })
     }
 
-     
+
     /// Internal method to decode a log using a pre-parsed `JsonEvent`
     fn parse_log_with_json(&self, json_event: &JsonEvent) -> Result<DecodedEvent> {
         // Convert JsonEvent inputs to DynSolTypes for dynamic decoding
@@ -355,12 +354,12 @@ impl BaseProcessor for EthProcessorImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::utils::{mock_transfer_log, mock_approval_log};
-    use alloy::dyn_abi::DynSolValue;
-    use alloy::primitives::{Address, Bytes, U256};
-    use alloy::primitives::hex::FromHex;
-    use std::str::FromStr;
     use alloy::consensus::private::alloy_primitives;
+    use alloy::dyn_abi::DynSolValue;
+    use alloy::primitives::hex::FromHex;
+    use alloy::primitives::{Address, Bytes, U256};
+    use alloy::primitives::{LogData, B256};
+    use std::str::FromStr;
 
     #[test]
     fn test_decode_from_abi_str() {

@@ -1,50 +1,30 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::info;
 
 struct StreamState {
+    // concurrent process_binding tasks in this stream
     active: i32,
-    last_change: Instant,
-    idle_ms_acc: u128,
+    // stream lifetime start
+    open_at: Instant,
+    // start of current working interval if active
+    work_start: Option<Instant>,
+    // cumulative working time across lifetime (ns)
+    work_ns_total: u128,
     closed: bool,
 }
 
 impl Default for StreamState {
     fn default() -> Self {
-        Self { active: 0, last_change: Instant::now(), idle_ms_acc: 0, closed: false }
+        Self { active: 0, open_at: Instant::now(), work_start: None, work_ns_total: 0, closed: false }
     }
 }
 
 struct AccumState {
     streams: HashMap<i32, StreamState>,
-    // Global concurrent active streams across server
-    streams_active: i32,
-    streams_min_active: i32,
-    streams_max_active: i32,
-    handler_time_ns_sum: u128,
-    handler_calls: u64,
-    db_time_ns_sum: u128,
-    db_ops: u64,
-    window_start: Instant,
-}
-
-impl AccumState {
-    fn new() -> Self {
-        Self {
-            streams: HashMap::new(),
-            streams_active: 0,
-            streams_min_active: i32::MAX,
-            streams_max_active: 0,
-            handler_time_ns_sum: 0,
-            handler_calls: 0,
-            db_time_ns_sum: 0,
-            db_ops: 0,
-            window_start: Instant::now(),
-        }
-    }
 }
 
 struct BenchmarkInner {
@@ -58,19 +38,11 @@ impl BenchmarkInner {
             .state
             .streams
             .entry(stream_id)
-            .or_insert_with(|| StreamState {
-                active: 0,
-                last_change: now,
-                idle_ms_acc: 0,
-                closed: false,
-            });
-        // If previously idle, add idle duration until now
+            .or_insert_with(StreamState::default);
         if st.active == 0 {
-            let dur = now.saturating_duration_since(st.last_change);
-            st.idle_ms_acc += dur.as_millis();
+            st.work_start = Some(now);
         }
         st.active += 1;
-        st.last_change = now;
     }
 
     fn on_binding_dec(&mut self, stream_id: i32) {
@@ -80,126 +52,133 @@ impl BenchmarkInner {
             if st.active < 0 {
                 st.active = 0;
             }
-            // If transitioned to idle, mark last_change for future idle accumulation
             if st.active == 0 {
-                st.last_change = now;
+                if let Some(ws) = st.work_start.take() {
+                    st.work_ns_total += now.saturating_duration_since(ws).as_nanos();
+                }
             }
         } else {
-            // Initialize and set to 0 idle
-            self.state.streams.insert(
-                stream_id,
-                StreamState {
-                    active: 0,
-                    last_change: now,
-                    idle_ms_acc: 0,
-                    closed: false,
-                },
-            );
+            self.state.streams.insert(stream_id, StreamState::default());
         }
     }
 
     fn on_stream_open(&mut self, stream_id: i32) {
         let now = Instant::now();
         // Insert if absent
-        self.state.streams.entry(stream_id).or_insert_with(|| StreamState {
-            active: 0,
-            last_change: now,
-            idle_ms_acc: 0,
-            closed: false,
+        self.state
+            .streams
+            .entry(stream_id)
+            .or_insert_with(|| StreamState { active: 0, open_at: now, work_start: None, work_ns_total: 0, closed: false });
+        // Update global stream concurrency atomically
+        let active = STREAMS_ACTIVE.fetch_add(1, Ordering::Relaxed) + 1;
+        // max
+        let _ = STREAMS_MAX_ACTIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            if active > cur { Some(active) } else { None }
         });
-        self.state.streams_active += 1;
-        if self.state.streams_active > self.state.streams_max_active {
-            self.state.streams_max_active = self.state.streams_active;
-        }
-        if self.state.streams_active < self.state.streams_min_active {
-            self.state.streams_min_active = self.state.streams_active;
-        }
+        // min
+        let _ = STREAMS_MIN_ACTIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            if active < cur { Some(active) } else { None }
+        });
     }
 
     fn on_stream_close(&mut self, stream_id: i32) {
         let now = Instant::now();
         if let Some(st) = self.state.streams.get_mut(&stream_id) {
-            if st.active == 0 {
-                let dur = now.saturating_duration_since(st.last_change);
-                st.idle_ms_acc += dur.as_millis();
+            if st.active > 0 {
+                if let Some(ws) = st.work_start.take() {
+                    st.work_ns_total += now.saturating_duration_since(ws).as_nanos();
+                }
+                st.active = 0;
             }
             st.closed = true;
         }
-        self.state.streams_active -= 1;
-        if self.state.streams_active < 0 {
-            self.state.streams_active = 0;
+        let active = STREAMS_ACTIVE.fetch_sub(1, Ordering::Relaxed) - 1;
+        if active < 0 {
+            STREAMS_ACTIVE.store(0, Ordering::Relaxed);
         }
-        if self.state.streams_active < self.state.streams_min_active {
-            self.state.streams_min_active = self.state.streams_active;
-        }
+        let _ = STREAMS_MIN_ACTIVE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            if active < cur { Some(active) } else { None }
+        });
     }
 
     fn record_handler_time(&mut self, dur: Duration) {
-        self.state.handler_time_ns_sum += dur.as_nanos();
-        self.state.handler_calls += 1;
+        let ns = dur.as_nanos();
+        HANDLER_TIME_NS_SUM.fetch_add((ns.min(u64::MAX as u128)) as u64, Ordering::Relaxed);
+        HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
     fn record_db_time(&mut self, dur: Duration) {
-        self.state.db_time_ns_sum += dur.as_nanos();
-        self.state.db_ops += 1;
+        let ns = dur.as_nanos();
+        DB_TIME_NS_SUM.fetch_add((ns.min(u64::MAX as u128)) as u64, Ordering::Relaxed);
+        DB_OPS.fetch_add(1, Ordering::Relaxed);
     }
 
     fn drain_and_report(&mut self) {
-        let now = Instant::now();
-        let window_dur = now.saturating_duration_since(self.state.window_start);
-        let window_ms = window_dur.as_millis().max(1) as f64;
+        let now_inst = Instant::now();
+        let now_ms = now_epoch_ms();
+        let last_ms = WINDOW_START_EPOCH_MS.swap(now_ms, Ordering::AcqRel);
+        let window_ms = (now_ms.saturating_sub(last_ms)).max(1) as f64;
 
-        // Top up idle time for streams that are currently idle
-        for st in self.state.streams.values_mut() {
-            if st.active == 0 {
-                let dur = now.saturating_duration_since(st.last_change);
-                st.idle_ms_acc += dur.as_millis();
-                st.last_change = now;
-            }
-        }
+        // Working time is accounted on transitions; no per-tick accrual needed.
 
-        let avg_handle_ms = if self.state.handler_calls > 0 {
-            (self.state.handler_time_ns_sum as f64) / (self.state.handler_calls as f64) / 1_000_000.0
+        let handler_calls = HANDLER_CALLS.swap(0, Ordering::AcqRel);
+        let handler_time_ns_sum = HANDLER_TIME_NS_SUM.swap(0, Ordering::AcqRel) as f64;
+        let avg_handle_ms = if handler_calls > 0 {
+            handler_time_ns_sum / (handler_calls as f64) / 1_000_000.0
         } else {
             0.0
         };
-        let avg_db_ms = if self.state.db_ops > 0 {
-            (self.state.db_time_ns_sum as f64) / (self.state.db_ops as f64) / 1_000_000.0
+        let db_ops = DB_OPS.swap(0, Ordering::AcqRel);
+        let db_time_ns_sum = DB_TIME_NS_SUM.swap(0, Ordering::AcqRel) as f64;
+        let avg_db_ms = if db_ops > 0 {
+            db_time_ns_sum / (db_ops as f64) / 1_000_000.0
+        } else {
+            0.0
+        };
+
+        let receive_time_ns_sum = RECEIVE_TIME_NS_SUM.swap(0, Ordering::AcqRel) as f64;
+        let receive_count = RECEIVE_COUNT.swap(0, Ordering::AcqRel);
+        let avg_receive_ms = if receive_count > 0 {
+            receive_time_ns_sum / (receive_count as f64) / 1_000_000.0
         } else {
             0.0
         };
 
         // Print header (streams concurrency)
         info!(
-            "[BENCH] last {:.0}s | avg handle {:.3}ms | calls/min {} | avg db {:.3}ms | streams max {} min {}",
+            "[BENCH] last {:.0}s | avg handle {:.3}ms | calls {} | avg db {:.3}ms | avg recv {:.3}ms | streams max {} min {}",
             window_ms / 1000.0,
             avg_handle_ms,
-            self.state.handler_calls,
+            handler_calls,
             avg_db_ms,
-            self.state.streams_max_active,
-            if self.state.streams_min_active == i32::MAX { 0 } else { self.state.streams_min_active },
+            avg_receive_ms,
+            STREAMS_MAX_ACTIVE.load(Ordering::Relaxed),
+            STREAMS_MIN_ACTIVE.load(Ordering::Relaxed),
         );
 
-        // Per-stream idle summary
+        // Per-stream work summary (lifetime-based)
         for (stream_id, st) in self.state.streams.iter() {
-            let idle_ms = st.idle_ms_acc as f64;
-            let idle_pct = (idle_ms / window_ms) * 100.0;
+            let lifetime_ms = now_inst.saturating_duration_since(st.open_at).as_millis() as f64;
+            let mut work_ns = st.work_ns_total;
+            if st.active > 0 {
+                if let Some(ws) = st.work_start {
+                    work_ns += now_inst.saturating_duration_since(ws).as_nanos();
+                }
+            }
+            let work_ms = (work_ns as f64) / 1_000_000.0;
+            let work_pct = if lifetime_ms > 0.0 { (work_ms / lifetime_ms) * 100.0 } else { 0.0 };
             info!(
-                "[BENCH] stream {}: idle {:.1}s ({:.1}%)",
+                "[BENCH] stream {}: work {:.1}s ({:.1}%)",
                 stream_id,
-                idle_ms / 1000.0,
-                idle_pct.max(0.0).min(100.0)
+                work_ms / 1000.0,
+                work_pct.max(0.0).min(100.0)
             );
         }
 
-        // Reset window
-        self.state.handler_time_ns_sum = 0;
-        self.state.handler_calls = 0;
-        self.state.db_time_ns_sum = 0;
-        self.state.db_ops = 0;
-        self.state.window_start = now;
-        self.state.streams_min_active = self.state.streams_active;
-        self.state.streams_max_active = self.state.streams_active.max(0);
+        // Reset stream concurrency window bounds to current active
+        let active = STREAMS_ACTIVE.load(Ordering::Relaxed);
+        STREAMS_MIN_ACTIVE.store(active, Ordering::Relaxed);
+        STREAMS_MAX_ACTIVE.store(active.max(0), Ordering::Relaxed);
 
         // Remove closed streams after reporting to prevent leaks
         let closed_ids: Vec<i32> = self
@@ -212,25 +191,41 @@ impl BenchmarkInner {
             self.state.streams.remove(&id);
         }
 
-        for st in self.state.streams.values_mut() {
-            st.idle_ms_acc = 0;
-            // last_change already set to now for idle streams; keep as-is for active
-        }
+        // Do not reset per-stream lifetime working time; keep accumulating until stream closed.
     }
 }
 
-static BENCH_STATE: OnceLock<Arc<Mutex<BenchmarkInner>>> = OnceLock::new();
+// Global hot-path counters (lock-free)
+static HANDLER_TIME_NS_SUM: AtomicU64 = AtomicU64::new(0);
+static HANDLER_CALLS: AtomicU64 = AtomicU64::new(0);
+static DB_TIME_NS_SUM: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_TIME_NS_SUM: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_COUNT: AtomicU64 = AtomicU64::new(0);
+static DB_OPS: AtomicU64 = AtomicU64::new(0);
+static WINDOW_START_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
+
+// Stream concurrency metrics (lock-free)
+static STREAMS_ACTIVE: AtomicI32 = AtomicI32::new(0);
+static STREAMS_MIN_ACTIVE: AtomicI32 = AtomicI32::new(i32::MAX);
+static STREAMS_MAX_ACTIVE: AtomicI32 = AtomicI32::new(0);
+
+// Stream details (rarely touched by hot path, guarded by a local mutex)
+static STREAMS_MAP: OnceLock<Mutex<BenchmarkInner>> = OnceLock::new();
 static REPORTER_STARTED: OnceLock<()> = OnceLock::new();
 static STREAM_ID_GEN: OnceLock<AtomicI32> = OnceLock::new();
+static ENABLED: AtomicBool = AtomicBool::new(false);
 
-fn get_state() -> Arc<Mutex<BenchmarkInner>> {
-    BENCH_STATE
-        .get_or_init(|| {
-            Arc::new(Mutex::new(BenchmarkInner {
-                state: AccumState::new(),
-            }))
-        })
-        .clone()
+fn get_inner() -> &'static Mutex<BenchmarkInner> {
+    STREAMS_MAP.get_or_init(|| Mutex::new(BenchmarkInner { state: AccumState { streams: HashMap::new() } }))
+}
+
+#[inline]
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 pub fn init_if_enabled() {
@@ -238,13 +233,16 @@ pub fn init_if_enabled() {
     if std::env::var("SHOW_BENCHMARK_RESULT").is_err() {
         return;
     }
+    // Mark benchmark system enabled so hot-paths can bail fast when disabled
+    ENABLED.store(true, Ordering::Relaxed);
     if REPORTER_STARTED.set(()).is_ok() {
+        WINDOW_START_EPOCH_MS.store(now_epoch_ms(), Ordering::Relaxed);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                let state = get_state();
-                let mut guard = state.lock().unwrap();
+                let inner = get_inner();
+                let mut guard = inner.lock().unwrap();
                 guard.drain_and_report();
             }
         });
@@ -253,46 +251,63 @@ pub fn init_if_enabled() {
 }
 
 pub fn new_stream_id() -> i32 {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return 0;
+    }
     let idgen = STREAM_ID_GEN.get_or_init(|| AtomicI32::new(1));
     idgen.fetch_add(1, Ordering::Relaxed)
 }
 
 pub fn on_stream_open(stream_id: i32) {
+    if !ENABLED.load(Ordering::Relaxed) { return; }
     if stream_id == 0 { return; }
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
+    let inner = get_inner();
+    let mut guard = inner.lock().unwrap();
     guard.on_stream_open(stream_id);
 }
 
 pub fn on_stream_close(stream_id: i32) {
+    if !ENABLED.load(Ordering::Relaxed) { return; }
     if stream_id == 0 { return; }
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
+    let inner = get_inner();
+    let mut guard = inner.lock().unwrap();
     guard.on_stream_close(stream_id);
 }
 
 pub fn on_binding_spawn(stream_id: i32) {
+    if !ENABLED.load(Ordering::Relaxed) { return; }
     if stream_id == 0 { return; }
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
+    let inner = get_inner();
+    let mut guard = inner.lock().unwrap();
     guard.on_binding_inc(stream_id);
 }
 
 pub fn on_binding_done(stream_id: i32) {
+    if !ENABLED.load(Ordering::Relaxed) { return; }
     if stream_id == 0 { return; }
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
+    let inner = get_inner();
+    let mut guard = inner.lock().unwrap();
     guard.on_binding_dec(stream_id);
 }
 
 pub fn record_handler_time(dur: Duration) {
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
-    guard.record_handler_time(dur);
+    if !ENABLED.load(Ordering::Relaxed) { return; }
+    // hot path: update atomics directly
+    let ns = dur.as_nanos();
+    HANDLER_TIME_NS_SUM.fetch_add((ns.min(u64::MAX as u128)) as u64, Ordering::Relaxed);
+    HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_db_time(dur: Duration) {
-    let state = get_state();
-    let mut guard = state.lock().unwrap();
-    guard.record_db_time(dur);
+    if !ENABLED.load(Ordering::Relaxed) { return; }
+    let ns = dur.as_nanos();
+    DB_TIME_NS_SUM.fetch_add((ns.min(u64::MAX as u128)) as u64, Ordering::Relaxed);
+    DB_OPS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_receive_time(p0: Duration) {
+    if !ENABLED.load(Ordering::Relaxed) { return; }
+    let ns = p0.as_nanos();
+    RECEIVE_COUNT.fetch_add(1, Ordering::Relaxed);
+    RECEIVE_TIME_NS_SUM.fetch_add((ns.min(u64::MAX as u128)) as u64, Ordering::Relaxed);
 }

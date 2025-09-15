@@ -109,52 +109,51 @@ impl EthTestFacet {
                 // Check if address matches (convert to lowercase for comparison)
                 let log_address = format!("{:?}", log.address()).to_lowercase();
                 let contract_address = contract.address.to_lowercase();
-                
-                if log_address != contract_address && contract_address != "*" {
-                    continue;
-                }
-                
-                // Check log handlers for topic matches
-                for log_config in &contract_config.log_configs {
-                    for filter in &log_config.filters {
-                        // Check if topics match
-                        let mut topic_match = true;
-                        for (topic_idx, filter_topic) in filter.topics.iter().enumerate() {
-                            if topic_idx >= log.topics().len() {
-                                topic_match = false;
-                                break;
-                            }
-                            
-                            let log_topic = format!("{:?}", log.topics()[topic_idx]).to_lowercase();
-                            
-                            // If filter topic has no hashes, it matches all
-                            if filter_topic.hashes.is_empty() {
-                                continue;
-                            }
-                            
-                            // Check if any of the filter topic hashes match
-                            let mut hash_match = false;
-                            for hash in &filter_topic.hashes {
-                                if hash.to_lowercase() == log_topic {
-                                    hash_match = true;
+
+                // address match
+                if log_address == contract_address || contract_address != "*" || contract_address != "" {
+                    // Check log handlers for topic matches
+                    for log_config in &contract_config.log_configs {
+                        for filter in &log_config.filters {
+                            // Check if topics match
+                            let mut topic_match = true;
+                            for (topic_idx, filter_topic) in filter.topics.iter().enumerate() {
+                                if topic_idx >= log.topics().len() {
+                                    topic_match = false;
+                                    break;
+                                }
+
+                                let log_topic = format!("{:?}", log.topics()[topic_idx]).to_lowercase();
+
+                                // If filter topic has no hashes, it matches all
+                                if filter_topic.hashes.is_empty() {
+                                    continue;
+                                }
+
+                                // Check if any of the filter topic hashes match
+                                let mut hash_match = false;
+                                for hash in &filter_topic.hashes {
+                                    if hash.to_lowercase() == log_topic {
+                                        hash_match = true;
+                                        break;
+                                    }
+                                }
+
+                                if !hash_match {
+                                    topic_match = false;
                                     break;
                                 }
                             }
-                            
-                            if !hash_match {
-                                topic_match = false;
-                                break;
+
+                            if topic_match {
+                                handler_ids.push(log_config.handler_id);
                             }
-                        }
-                        
-                        if topic_match {
-                            handler_ids.push(log_config.handler_id);
                         }
                     }
                 }
             }
         }
-        
+
         handler_ids
     }
 

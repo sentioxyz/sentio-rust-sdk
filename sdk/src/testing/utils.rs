@@ -4,6 +4,60 @@ use std::str::FromStr;
 
 /// Utility functions for creating mock blockchain data for testing
 
+/// Create a generic mock log with custom fields
+///
+/// # Arguments
+/// - `topics` - Slice of topic strings (e.g., event signature and indexed params)
+/// - `data` - Hex data payload for the log
+/// - `transaction_hash` - Transaction hash the log belongs to
+/// - `block_hash` - Block hash containing the log
+/// - `block_number` - Block number containing the log
+/// - `log_index` - Index of the log within the block
+///
+/// The `address` is set to a stable test contract address.
+pub fn mock_log(
+    topics: &[&str],
+    data: &str,
+    transaction_hash: &str,
+    block_hash: &str,
+    block_number: u64,
+    log_index: u64,
+) -> Log {
+    let topics_json = topics
+        .iter()
+        .map(|t| format!("\"{}\"", t))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let block_number_hex = format!("0x{:x}", block_number);
+    let log_index_hex = format!("0x{:x}", log_index);
+
+    let log_json = format!(
+        r#"{{
+        "address": "{}",
+        "topics": [
+            {}
+        ],
+        "data": "{}",
+        "blockHash": "{}",
+        "blockNumber": "{}",
+        "transactionHash": "{}",
+        "transactionIndex": "0x0",
+        "logIndex": "{}",
+        "removed": false
+    }}"#,
+        addresses::TEST_CONTRACT,
+        topics_json,
+        data,
+        block_hash,
+        block_number_hex,
+        transaction_hash,
+        log_index_hex
+    );
+
+    serde_json::from_str(&log_json).expect("Failed to create mock log")
+}
+
 /// Create a mock ERC20 Transfer log
 ///
 /// This is a common utility for testing ERC20 token processors.
@@ -27,7 +81,7 @@ use std::str::FromStr;
 ///     "1000000000000000000" // 1 token (18 decimals)
 /// );
 /// ```
-/// Create a mock ERC20 Transfer log using JSON deserialization for compatibility  
+/// Create a mock ERC20 Transfer log using JSON deserialization for compatibility
 pub fn mock_transfer_log(
     contract_address: &str,
     from: &str, 
@@ -232,4 +286,22 @@ mod tests {
         assert_eq!(tx.block_number, Some(14371919));
         assert!(tx.transaction_index.is_some());
       }
+
+    #[test]
+    fn test_mock_log_generic() {
+        let topics = vec![
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+        ];
+        let data = "0x000000000000000000000000000000000000000000000000000000000000003e"; // 62
+        let tx_hash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let block_hash = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let log = mock_log(&topics, data, tx_hash, block_hash, 12345, 7);
+
+        assert_eq!(format!("{:?}", log.address()).to_lowercase(), addresses::TEST_CONTRACT.to_lowercase());
+        assert_eq!(log.topics().len(), 2);
+        assert_eq!(log.block_number, Some(12345));
+        assert_eq!(log.transaction_hash.unwrap().to_string(), tx_hash);
+        assert_eq!(log.block_hash.unwrap().to_string(), block_hash);
+    }
 }

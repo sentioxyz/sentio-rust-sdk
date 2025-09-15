@@ -1,17 +1,17 @@
-use std::env;
-use std::time::Instant;
-use anyhow::anyhow;
+use crate::abi_client::AbiClient;
+use crate::bench;
+use crate::generated::entities::DecodedLogBuilder;
 use alloy::dyn_abi::DynSolValue;
-use tracing::{debug, info, warn};
-use sentio_sdk::{async_trait, Entity};
+use anyhow::anyhow;
 use sentio_sdk::core::{Context, Event};
+use sentio_sdk::entity::ID;
+use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
 use sentio_sdk::eth::{EthEventHandler, EventMarker};
-use sentio_sdk::eth::context::EthContext;
-use sentio_sdk::entity::ID;
-use crate::abi_client::AbiClient;
-use crate::generated::entities::DecodedLogBuilder;
-use crate::bench;
+use sentio_sdk::{async_trait, Entity};
+use std::env;
+use std::time::Instant;
+use tracing::{debug, info, warn};
 
 
 pub struct LogDecoderProcessor {
@@ -330,5 +330,55 @@ fn format_dyn_sol_value(value: &DynSolValue) -> String {
         }
         // Handle any additional variants
         _ => "[unsupported type]".to_string(),
+    }
+}
+
+
+#[cfg(test)]
+mod Test {
+    use crate::processor::{AllEventsMarker, LogDecoderProcessor};
+    use sentio_sdk::eth::eth_processor::EthProcessor;
+    use sentio_sdk::eth::Log;
+    use sentio_sdk::testing::chain_ids;
+    use sentio_sdk::TestProcessorServer;
+
+    #[tokio::test]
+    async fn test_event_logging() {
+        let mut test_server = TestProcessorServer::new();
+
+        // Create and configure our processor
+        let processor = LogDecoderProcessor::new();
+
+        // Configure the processor for both Transfer and Approval events in a single chain
+        processor
+            .configure_event::<AllEventsMarker>(None)
+            .bind(&test_server);
+
+        // Start the test server
+        test_server.start().await.expect("Failed to start test server");
+        let eth_facet = test_server.eth();
+
+        println!("📝 Testing event logging functionality...");
+
+       let log_json = r#"{
+  "address": "0x43d2b8827218752ffe5a35cefc3bbe50ca79af47",
+  "topics": [
+    "0x8ece6e03e20ee8b641312cdcad8dc887f10b28212c37c7f4e6149f1bcf534c1c"
+  ],
+  "data": "0x000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000140a7760a00000000000000000000000000000000000000000000000000090c495d4141d960000000000000000000000000000000000000000000000000000000005c3e3b83000000000000000000000000000000000000000000000000000000005c40de83",
+  "blockNumber": "0x6c1532",
+  "transactionHash": "0x2a4a590b383b6ca794191fe3baf417b285ebd54c66934f0e0bccc75cd9972334",
+  "transactionIndex": "0x3a",
+  "blockHash": "0x1444858712263a98769db8db97fc03f3f2a4256999c3d4d38736256d583f8056",
+  "logIndex": "0x35",
+  "removed": false
+}"#;
+        let log: Log = serde_json::from_str(log_json).unwrap();
+
+        // Process the transfer event
+        let result = eth_facet.test_log(log.clone(), Some(chain_ids::ETHEREUM)).await;
+
+        // Verify event logs are recorded
+        assert!(result.events.is_empty());
     }
 }

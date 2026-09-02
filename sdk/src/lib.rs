@@ -18,9 +18,17 @@ pub mod processor {
     tonic::include_proto!("processor");
 }
 
+/// Protocol-level SDK version reported to the Sentio platform on upload.
+///
+/// The Rust SDK speaks the same `ProcessorV3` wire protocol as `@sentio/sdk` v4
+/// (timeseries-only metrics, `entity_data` upserts, no legacy v2 fields), so it
+/// reports itself as a v4 SDK. The `-development` suffix opts out of the server's
+/// minor-version compatibility check, which is calibrated for the npm releases.
+pub const SENTIO_SDK_VERSION: &str = "4.0.0-development";
+
 // Re-export commonly used types for convenience
 pub use common::*;
-pub use core::{BaseProcessor, Plugin};
+pub use core::{BaseProcessor, HandlerConfigs, Plugin};
 pub use eth::EthPlugin;
 pub use processor::HandlerType;
 pub use processor::*;

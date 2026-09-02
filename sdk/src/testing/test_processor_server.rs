@@ -3,7 +3,7 @@ use crate::testing::{TestEnvironment, EthTestFacet, MemoryDatabase, TestResult, 
 use crate::core::{AttributeValue, PluginManager, RuntimeContext};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use crate::{ConfigureHandlersResponse, DataBinding};
+use crate::{HandlerConfigs, DataBinding};
 use crate::entity::store::backend::Backend;
 use crate::eth::EthHandlerType;
 use crate::timeseries_result::TimeseriesType;
@@ -36,7 +36,7 @@ pub struct TestProcessorServer {
     
     /// Plugin manager for coordinating processors (public for facet access)
     pub(crate) plugin_manager: Arc<PluginManager>,
-    config: Option<ConfigureHandlersResponse>
+    config: Option<HandlerConfigs>
 }
 
 impl TestProcessorServer {
@@ -45,13 +45,17 @@ impl TestProcessorServer {
         
 
         let remote_backend = std::sync::Arc::new(Backend::memory(self.db.clone()));
-        let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend);
+        let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend)
+            .with_handler_type(data_binding.handler_type);
         
 
 
-        match self.plugin_manager.process(data_binding, runtime_context).await {
+        match self.plugin_manager.process(data_binding, runtime_context.clone()).await {
             Ok(_process_result) => {
-                // Processing succeeded, collect any messages from the channel
+                // Push out any timeseries still buffered in the context, then collect
+                if let Err(e) = runtime_context.flush_timeseries().await {
+                    eprintln!("Error flushing timeseries: {}", e);
+                }
                 while let Ok(msg) = rx.try_recv() {
                     if let Ok(response) = msg {
                         self.collect_results_from_channel_response(response, test_result);
@@ -108,9 +112,21 @@ impl TestProcessorServer {
             .map(|m| m.name.clone())
             .unwrap_or_default();
 
-        let labels = ts_result.metadata.as_ref()
+        // Base labels come from the metadata; per-call labels ride along in the data
+        // struct next to the reserved `value`/`add`/`name` fields.
+        let mut labels = ts_result.metadata.as_ref()
             .map(|m| m.labels.clone())
             .unwrap_or_default();
+        if let Some(ref data) = ts_result.data {
+            for (key, value) in &data.fields {
+                if matches!(key.as_str(), "value" | "add" | "name") {
+                    continue;
+                }
+                if let Some(crate::common::rich_value::Value::StringValue(s)) = &value.value {
+                    labels.entry(key.clone()).or_insert_with(|| s.clone());
+                }
+            }
+        }
 
         // Get the metric type from the `type` field
         let metric_type = TimeseriesType::try_from(ts_result.r#type)
@@ -124,6 +140,12 @@ impl TestProcessorServer {
                     Some(value_type) => match value_type {
                         crate::common::rich_value::Value::FloatValue(f) => Some(*f),
                         crate::common::rich_value::Value::IntValue(i) => Some(*i as f64),
+                        crate::common::rich_value::Value::BigdecimalValue(_) => {
+                            use crate::entity::FromRichValue;
+                            crate::entity::BigDecimal::from_rich_value(v)
+                                .ok()
+                                .and_then(|d| d.to_string().parse::<f64>().ok())
+                        }
                         _ => None,
                     },
                     None => None,
@@ -244,15 +266,12 @@ impl TestProcessorServer {
     }
 
     /// Get processor configuration for debugging
-    pub async fn get_config(&self) -> ConfigureHandlersResponse {
+    pub async fn get_config(&self) -> HandlerConfigs {
         if self.config.is_some() {
             return self.config.as_ref().unwrap().clone();
         }
         // Get the configuration from all registered plugins
-        let mut config_response = ConfigureHandlersResponse {
-            contract_configs: vec![],
-            account_configs: vec![],
-        };
+        let mut config_response = HandlerConfigs::default();
         
         // Get configuration from plugin manager
         self.plugin_manager.configure_all_plugins(&mut config_response);

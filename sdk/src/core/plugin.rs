@@ -1,6 +1,17 @@
-use crate::{BaseProcessor, ConfigureHandlersResponse};
-use crate::processor::HandlerType;
+use crate::BaseProcessor;
+use crate::processor::{AccountConfig, ContractConfig, HandlerType};
 use std::any::Any;
+
+/// Handler configuration collected from all plugins during `GetConfig`.
+///
+/// This used to be the `ConfigureHandlersResponse` proto message, which was
+/// removed from the v4 protocol. It now lives here as a plain accumulator whose
+/// contents are copied into `ProcessConfigResponse`.
+#[derive(Debug, Clone, Default)]
+pub struct HandlerConfigs {
+    pub contract_configs: Vec<ContractConfig>,
+    pub account_configs: Vec<AccountConfig>,
+}
 
 /// Plugin trait that defines the available handler types for a processor
 pub trait Plugin: Send + Sync + Any {
@@ -16,7 +27,7 @@ pub trait Plugin: Send + Sync + Any {
 
     /// Configure handlers for all processors managed by the plugin
     /// This method registers all handlers with the plugin's handler register
-    fn configure(&mut self, config: &mut ConfigureHandlersResponse);
+    fn configure(&mut self, config: &mut HandlerConfigs);
     
     /// Process a data binding request for a specific handler type
     /// Returns whether this plugin can handle the given handler type

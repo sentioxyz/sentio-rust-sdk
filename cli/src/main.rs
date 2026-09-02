@@ -93,6 +93,13 @@ enum Commands {
         /// Overwrite existing processor version without confirmation
         #[arg(long)]
         silent_overwrite: bool,
+        /// Number of processor workers (listening ports) the platform should start
+        #[arg(long)]
+        num_workers: Option<u32>,
+        /// Project variable to save before the upload, as KEY=VALUE (repeatable),
+        /// e.g. --variable SENTIO_ENTITY_SCHEMA_VERSION=8
+        #[arg(long = "variable", value_name = "KEY=VALUE")]
+        variables: Vec<String>,
     },
     /// Manage authentication with Sentio platform
     Auth {
@@ -211,7 +218,7 @@ async fn main() -> Result<()> {
         }
         Commands::Upload { 
             path, host, owner, name, api_key, token, continue_from, 
-            nobuild, debug, silent_overwrite 
+            nobuild, debug, silent_overwrite, num_workers, variables
         } => {
             let command = upload::UploadCommand {
                 path,
@@ -224,6 +231,8 @@ async fn main() -> Result<()> {
                 nobuild,
                 debug,
                 silent_overwrite,
+                num_workers,
+                variables,
             };
             command.execute().await?;
         }

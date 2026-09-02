@@ -1,38 +1,231 @@
+//! Multichain ERC20 transfer processor.
+//!
+//! Rust port of the TypeScript `erc20-transfer-multichain` processor: one wildcard
+//! (`address = "*"`) binding per chain receives every `Transfer` log on that chain,
+//! token metadata is read over RPC once per token, and each transfer is stored as
+//! `Token`/`Transfer` entities (no metrics).
+
+use crate::chains_config::ChainsConfig;
+use crate::generated::entities::{TokenBuilder, TransferBuilder};
+use alloy::primitives::{Address, U256};
+use alloy::providers::RootProvider;
+use alloy::rpc::client::RpcClient;
+use alloy::sol;
+use bigdecimal::BigDecimal;
+use moka::sync::Cache;
+use num_bigint::{BigInt, Sign};
 use sentio_sdk::core::Context;
-use crate::generated::entities::TransferBuilder;
+use sentio_sdk::entity::ID;
 use sentio_sdk::eth::context::EthContext;
-use sentio_sdk::eth::eth_processor::*;
-use sentio_sdk::eth::{EthEventHandler, EventMarker};
+use sentio_sdk::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
+use sentio_sdk::eth::{EthEventHandler, EventMarker, Log};
 use sentio_sdk::{async_trait, EntityStore};
-use sentio_sdk::entity::{BigInt, BigDecimal, Timestamp, ID};
-use std::collections::HashMap;
+use tracing::{debug, warn};
 
-#[derive(Clone)]
-pub struct MyEthProcessor {
-    address: String,
-    chain_id: String,
-    name: String,
- }
+/// keccak256("Transfer(address,address,uint256)")
+pub const TRANSFER_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-impl Default for MyEthProcessor {
+/// Chains to track, as (chain id, start block). Ethereum is indexed from genesis;
+/// a wildcard ERC20 processor over a whole chain is expensive, so raise the start
+/// block (the commented entries are rough recent values) before uploading if you
+/// only need recent history.
+pub const CHAINS: &[(&str, u64)] = &[
+    ("1", 0), // Ethereum, from genesis
+    // ("8453", 22_000_000),   // Base
+    // ("42161", 270_000_000), // Arbitrum
+    // ("10", 127_000_000),    // Optimism
+    // ("137", 64_000_000),    // Polygon
+    // ("56", 43_000_000),     // BSC
+    // ("43114", 52_000_000),  // Avalanche
+];
+
+sol! {
+    #[sol(rpc)]
+    interface IERC20 {
+        function decimals() external view returns (uint8);
+        function symbol() external view returns (string);
+        function name() external view returns (string);
+    }
+
+    /// Pre-standard tokens (MKR, SAI, ...) return `bytes32` for symbol/name.
+    #[sol(rpc)]
+    interface IERC20Bytes32 {
+        function symbol() external view returns (bytes32);
+        function name() external view returns (bytes32);
+    }
+}
+
+/// Storage limits of the platform's `BigDecimal!` / `BigInt!` columns. They depend
+/// on the project's entity schema version (project variable
+/// `SENTIO_ENTITY_SCHEMA_VERSION`, a bit set; driver `BuildFeatures`):
+/// bit 8 → BigDecimal is `Decimal512(60)` instead of `Decimal256(30)`,
+/// bit 4 → BigInt is `Int256` instead of the `[-2^256, 2^256-1]` tuple encoding.
+/// Values outside these ranges fail the whole binding (driver `check_value.go`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnLimits {
+    /// Fractional digits kept by the BigDecimal column
+    pub decimal_scale: i64,
+    /// Largest |value| the BigDecimal column accepts
+    pub decimal_max: BigDecimal,
+    /// BigInt column range (inclusive)
+    pub bigint_min: BigInt,
+    pub bigint_max: BigInt,
+}
+
+impl ColumnLimits {
+    pub fn for_schema_version(version: u32) -> Self {
+        let (precision, decimal_scale) = if version & 8 != 0 { (154u32, 60i64) } else { (76u32, 30i64) };
+        let decimal_max = BigDecimal::new(BigInt::from(10u32).pow(precision) - 1, decimal_scale);
+        let (bigint_min, bigint_max) = if version & 4 != 0 {
+            (-(BigInt::from(1u32) << 255u32), (BigInt::from(1u32) << 255u32) - 1)
+        } else {
+            (-(BigInt::from(1u32) << 256u32), (BigInt::from(1u32) << 256u32) - 1)
+        };
+        Self { decimal_scale, decimal_max, bigint_min, bigint_max }
+    }
+
+    /// Limits for this deployment: project variables reach the processor as env vars.
+    pub fn from_env() -> Self {
+        let version = std::env::var("SENTIO_ENTITY_SCHEMA_VERSION")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        Self::for_schema_version(version)
+    }
+
+    pub fn fits_bigdecimal(&self, v: &BigDecimal) -> bool {
+        v.abs() <= self.decimal_max
+    }
+
+    pub fn fits_bigint(&self, v: &BigInt) -> bool {
+        *v >= self.bigint_min && *v <= self.bigint_max
+    }
+
+    /// Round to the column's scale when the value carries more fractional digits.
+    pub fn round(&self, v: BigDecimal) -> BigDecimal {
+        if v.fractional_digit_count() > self.decimal_scale {
+            v.with_scale_round(self.decimal_scale, bigdecimal::RoundingMode::HalfEven)
+        } else {
+            v
+        }
+    }
+}
+
+/// Decode a `bytes32` symbol/name: UTF-8 padded with trailing NULs.
+pub fn bytes32_to_string(raw: alloy::primitives::FixedBytes<32>) -> String {
+    String::from_utf8_lossy(raw.as_slice()).trim_end_matches('\0').to_string()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenInfo {
+    pub decimals: u8,
+    pub symbol: String,
+    pub name: String,
+}
+
+impl Default for TokenInfo {
+    /// What a token looks like when its metadata cannot be read.
     fn default() -> Self {
-        Self::new()
+        Self { decimals: 0, symbol: "unknown".to_string(), name: "unknown".to_string() }
     }
 }
 
-impl MyEthProcessor {
-    pub fn new() -> Self {
+pub struct Erc20TransferProcessor {
+    chain_id: String,
+    start_block: u64,
+    name: String,
+    rpc: Option<RootProvider>,
+    /// (chain, token) pairs whose Token row is already written, so metadata is read
+    /// over RPC and upserted once per token instead of once per transfer.
+    token_cache: Cache<String, TokenInfo>,
+    limits: ColumnLimits,
+}
+
+impl Erc20TransferProcessor {
+    pub fn new(chain_id: &str, start_block: u64, chains: &ChainsConfig) -> Self {
+        let rpc = chains.rpc_url(chain_id).and_then(|url| match url.parse() {
+            Ok(url) => Some(RootProvider::new(RpcClient::new_http(url))),
+            Err(e) => {
+                eprintln!("invalid RPC url for chain {}: {}", chain_id, e);
+                None
+            }
+        });
         Self {
-            address: "0x1234567890123456789012345678901234567890".to_string(),
-            chain_id: "1".to_string(),
-            name: "Sentio ETH + Entity Framework Demo".to_string(),
-         }
+            chain_id: chain_id.to_string(),
+            start_block,
+            name: format!("ERC20 transfers (chain {})", chain_id),
+            rpc,
+            token_cache: Cache::new(100_000),
+            limits: ColumnLimits::from_env(),
+        }
+    }
+
+    pub fn with_column_limits(mut self, limits: ColumnLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    pub fn has_rpc(&self) -> bool {
+        self.rpc.is_some()
+    }
+
+    async fn fetch_token_info(&self, token: &str) -> anyhow::Result<TokenInfo> {
+        let provider = self.rpc.as_ref().ok_or_else(|| anyhow::anyhow!("no RPC endpoint configured"))?;
+        let address = token.parse::<Address>()?;
+        let contract = IERC20::new(address, provider.clone());
+        // Bind the call builders first: `call()` borrows them for the future's lifetime.
+        let (decimals, symbol, name) = (contract.decimals(), contract.symbol(), contract.name());
+        let (decimals, symbol, name) = tokio::join!(decimals.call(), symbol.call(), name.call());
+        // Without decimals there is no usable metadata at all.
+        let decimals = decimals?;
+
+        // `string` decoding fails on bytes32 tokens; retry with the legacy ABI.
+        let legacy = IERC20Bytes32::new(address, provider.clone());
+        let symbol = match symbol {
+            Ok(s) => s,
+            Err(_) => bytes32_to_string(legacy.symbol().call().await?),
+        };
+        let name = match name {
+            Ok(s) => s,
+            Err(_) => bytes32_to_string(legacy.name().call().await?),
+        };
+        Ok(TokenInfo { decimals, symbol, name })
+    }
+
+    /// The wildcard binding makes the context address literally `"*"`, so the token
+    /// address has to come from the log itself.
+    async fn get_or_create_token(&self, ctx: &EthContext, token: &str) -> TokenInfo {
+        let id = format!("{}-{}", self.chain_id, token);
+        if let Some(info) = self.token_cache.get(&id) {
+            return info;
+        }
+
+        let info = self.fetch_token_info(token).await.unwrap_or_else(|e| {
+            warn!("failed to read token metadata for {} on {}: {}", token, self.chain_id, e);
+            TokenInfo::default()
+        });
+
+        let entity = TokenBuilder::default()
+            .id(ID::from(id.clone()))
+            .chain(self.chain_id.clone())
+            .address(token.to_string())
+            .symbol(info.symbol.clone())
+            .name(info.name.clone())
+            .decimals(info.decimals as i32)
+            .build()
+            .expect("Token entity");
+        match ctx.store().upsert(&entity).await {
+            Ok(()) => self.token_cache.insert(id, info.clone()),
+            Err(e) => warn!("failed to save token {}: {}", id, e),
+        }
+        info
     }
 }
 
-impl EthProcessor for MyEthProcessor {
+impl EthProcessor for Erc20TransferProcessor {
     fn address(&self) -> &str {
-        &self.address
+        "*"
     }
 
     fn chain_id(&self) -> &str {
@@ -42,181 +235,129 @@ impl EthProcessor for MyEthProcessor {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn start_block(&self) -> Option<u64> {
+        Some(self.start_block)
+    }
 }
 
-// Define different event marker types for the same processor
 pub struct TransferEvent;
-pub struct ApprovalEvent;
 
 impl EventMarker for TransferEvent {
     fn filter() -> Vec<EventFilter> {
-        vec![EventFilter {
-            address: None,
-            address_type: None,
-            topics: vec!["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef".to_string()], // Transfer event topic
-        }]
+        vec![EventFilter { address: None, address_type: None, topics: vec![TRANSFER_TOPIC.to_string()] }]
     }
 }
 
-impl EventMarker for ApprovalEvent {
-    fn filter() -> Vec<EventFilter> {
-        vec![EventFilter {
-            address: None,
-            address_type: None,
-            topics: vec!["0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925".to_string()], // Approval event topic
-        }]
+/// Decode an ERC20 `Transfer(address indexed from, address indexed to, uint256 value)`
+/// log. Returns `None` for logs that merely share the topic (ERC721 transfers index
+/// the token id as a fourth topic, some tokens omit indexing) — those are skipped,
+/// like `skipWhenDecodeFailed` does in the TypeScript processor.
+pub fn decode_transfer(log: &Log) -> Option<(Address, Address, U256)> {
+    let topics = log.topics();
+    let data = &log.data().data;
+    if topics.len() != 3 || data.len() != 32 {
+        return None;
     }
+    Some((Address::from_word(topics[1]), Address::from_word(topics[2]), U256::from_be_slice(data)))
 }
 
 #[async_trait]
-impl EthEventHandler<TransferEvent> for MyEthProcessor {
-    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
-        println!("🔄 Processing TRANSFER event from contract: {:?} on chain: {}",
-                 event.log.address(), ctx.chain_id());
-
-        println!("Transfer event details - Block: {}, Transaction: {:?}, Log Index: {}",
-                 event.log.block_number.unwrap_or_default(),
-                 event.log.transaction_hash,
-                 event.log.log_index.unwrap_or_default()
-        );
-
-        // Extract transfer data from event logs (simplified version)
-        let from_address = if event.log.topics().len() > 1 {
-            format!("0x{:x}", event.log.topics()[1])
-        } else {
-            "0x0000000000000000000000000000000000000000".to_string()
+impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
+    async fn on_event(&self, event: EthEvent, ctx: EthContext) {
+        let Some((from, to, value)) = decode_transfer(&event.log) else {
+            debug!("skipping non-ERC20 Transfer log {}:{}", ctx.transaction_hash(), ctx.log_index());
+            return;
         };
-        
-        let to_address = if event.log.topics().len() > 2 {
-            format!("0x{:x}", event.log.topics()[2])
+        let token = alloy::hex::encode_prefixed(event.log.address());
+        let info = self.get_or_create_token(&ctx, &token).await;
+
+        let value_raw = BigInt::from_bytes_be(Sign::Plus, &value.to_be_bytes::<32>());
+        // decimals 0 also means "metadata unavailable", in which case the raw value stands.
+        let amount = self.limits.round(if info.decimals > 0 {
+            BigDecimal::new(value_raw.clone(), info.decimals as i64)
         } else {
-            "0x0000000000000000000000000000000000000000".to_string()
-        };
+            BigDecimal::from(value_raw.clone())
+        });
 
-        // Parse value from event data (simplified - real implementation would decode properly)
-        let value = if !event.log.data().data.is_empty() {
-            BigDecimal::from(event.log.data().data.len() as u64) // Placeholder calculation
-        } else {
-            BigDecimal::from(1000) // Default value
-        };
-
-        // Determine transfer type for categorization
-        let transfer_type = if from_address.ends_with("0000000000000000000000000000000000000000") {
-            "mint"
-        } else if to_address.ends_with("0000000000000000000000000000000000000000") {
-            "burn" 
-        } else {
-            "transfer"
-        };
-
-        // 📝 EVENT LOGGING: Record structured event data
-        let transfer_event = sentio_sdk::core::Event::name("Transfer")
-            .attr("contract", format!("{:?}", event.log.address()))
-            .attr("from", from_address.clone())
-            .attr("to", to_address.clone())
-            .attr("value", value.clone())
-            .attr("blockNumber", event.log.block_number.unwrap_or_default() as i64)
-            .attr("transactionHash", format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
-            .attr("type", transfer_type);
-
-        let event_logger = ctx.base_context().event_logger();
-        let _ = event_logger.emit(&transfer_event).await; // Use await and ignore result for now
-
-        // 📈 METRICS: Track counters and gauges
-        // Counter: Number of transfer events processed
-        let total_counter = ctx.base_context().counter("transfer_events_total");
-        let _ = total_counter.add(1.0, None).await;
-        
-        // Counter: Track transfers by type (mint, burn, normal transfer)
-        let type_counter = ctx.base_context().counter("transfers_by_type");
-        let mut type_labels = HashMap::new();
-        type_labels.insert("type".to_string(), transfer_type.to_string());
-        let _ = type_counter.add(1.0, Some(type_labels)).await;
-
-        // Gauge: Track current block number
-        let block_gauge = ctx.base_context().gauge("latest_block_processed");
-        let _ = block_gauge.record(event.log.block_number.unwrap_or_default() as f64, None).await;
-
-        // Gauge: Track transfer value (convert to f64 for gauge)
-        let value_f64 = value.to_string().parse::<f64>().unwrap_or(0.0);
-        let value_gauge = ctx.base_context().gauge("transfer_value");
-        let mut value_labels = HashMap::new();
-        value_labels.insert("type".to_string(), transfer_type.to_string());
-        let _ = value_gauge.record(value_f64, Some(value_labels)).await;
-
-        // 💾 ENTITY STORAGE: Create and store Transfer entity
-        let transfer_id = format!("{:?}-{}", 
-            event.log.transaction_hash.unwrap_or_default(), 
-            event.log.log_index.unwrap_or_default()
-        );
+        // Values the platform's columns cannot hold would fail the whole binding;
+        // skip the row for such (invariably junk) tokens.
+        if !self.limits.fits_bigdecimal(&amount) || !self.limits.fits_bigint(&value_raw) {
+            warn!(
+                "skipping transfer {}:{} of {}: value {} exceeds the BigDecimal/BigInt column range",
+                ctx.transaction_hash(), ctx.log_index(), token, value_raw
+            );
+            return;
+        }
 
         let transfer = TransferBuilder::default()
-            .id(ID::from(transfer_id))
-            .transaction_hash(format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
-            .block_number(BigInt::from(event.log.block_number.unwrap_or_default()))
-            .log_index(event.log.log_index.unwrap_or_default() as i32)
-            .contract(format!("{:?}", event.log.address()))
-            .from(from_address)
-            .to(to_address)
-            .value(value)
-            .timestamp(Timestamp::from_timestamp_millis(ctx.block_number() as i64 * 15000).unwrap_or_default())
+            .id(ID::from(format!("{}-{}-{}", self.chain_id, ctx.transaction_hash(), ctx.log_index())))
+            .chain(self.chain_id.clone())
+            .token_id(ID::from(format!("{}-{}", self.chain_id, token)))
+            .token_address(token)
+            .from(alloy::hex::encode_prefixed(from))
+            .to(alloy::hex::encode_prefixed(to))
+            .value(amount)
+            .value_raw(value_raw)
+            .block_number(ctx.block_number() as i32)
+            .timestamp(ctx.timestamp())
+            .tx_hash(ctx.transaction_hash())
+            .log_index(ctx.log_index())
             .build()
-            .expect("Failed to build transfer entity");
-
-        // Save entity to store
-        ctx.store().upsert(&transfer).await.expect("Failed to save transfer entity");
-        println!("💾 Saved Transfer entity with ID: {}", transfer.id);
-
-        println!("✅ Transfer event processing completed");
-     }
+            .expect("Transfer entity");
+        if let Err(e) = ctx.store().upsert(&transfer).await {
+            warn!("failed to save transfer {}: {}", transfer.id, e);
+        }
+    }
 }
 
-#[async_trait]
-impl EthEventHandler<ApprovalEvent> for MyEthProcessor {
-    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
-        println!("🔄 Processing APPROVAL event from contract: {:?} on chain: {}",
-                 event.log.address(), ctx.chain_id());
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // Extract approval data from event logs
-        let owner_address = if event.log.topics().len() > 1 {
-            format!("0x{:x}", event.log.topics()[1])
-        } else {
-            "0x0000000000000000000000000000000000000000".to_string()
-        };
-        
-        let spender_address = if event.log.topics().len() > 2 {
-            format!("0x{:x}", event.log.topics()[2])
-        } else {
-            "0x0000000000000000000000000000000000000000".to_string()
-        };
+    #[test]
+    fn default_column_limits_match_decimal256_and_the_tuple_bigint() {
+        let limits = ColumnLimits::for_schema_version(0);
+        // 65 integer digits: the value from ERR320 in production.
+        let junk: BigDecimal = "19272561691502883147561569842966314044707217750399251012769692253.235345185".parse().unwrap();
+        assert!(!limits.fits_bigdecimal(&junk));
+        // (10^76 - 1) / 10^30: 46 integer digits and 30 fractional digits, all nines.
+        let max: BigDecimal = format!("{}.{}", "9".repeat(46), "9".repeat(30)).parse().unwrap();
+        assert!(limits.fits_bigdecimal(&max));
+        assert!(!limits.fits_bigdecimal(&(max + BigDecimal::from(1u32))));
+        assert!(limits.fits_bigdecimal(&"-1000000000000000000".parse().unwrap()));
 
-        let allowance_value = if !event.log.data().data.is_empty() {
-            BigDecimal::from(event.log.data().data.len() as u64)
-        } else {
-            BigDecimal::from(0)
-        };
+        // Without bit 4 the BigInt column holds [-2^256, 2^256-1]: any uint256 fits.
+        let u256_max = BigInt::from_bytes_be(Sign::Plus, &U256::MAX.to_be_bytes::<32>());
+        assert!(limits.fits_bigint(&u256_max));
+        assert!(!limits.fits_bigint(&(u256_max + 1)));
+        assert_eq!(limits.round("1.5".parse().unwrap()), "1.5".parse::<BigDecimal>().unwrap());
+        assert_eq!(limits.round(BigDecimal::new(BigInt::from(15u32), 31)).fractional_digit_count(), 30);
+    }
 
-        // 📝 EVENT LOGGING: Record structured event data for approval
-        let approval_event = sentio_sdk::core::Event::name("Approval")
-            .attr("contract", format!("{:?}", event.log.address()))
-            .attr("owner", owner_address.clone())
-            .attr("spender", spender_address.clone())
-            .attr("value", allowance_value.clone())
-            .attr("blockNumber", event.log.block_number.unwrap_or_default() as i64);
+    #[test]
+    fn schema_version_8_enables_decimal512_and_4_enables_int256() {
+        let v8 = ColumnLimits::for_schema_version(8);
+        let junk: BigDecimal = "19272561691502883147561569842966314044707217750399251012769692253.235345185".parse().unwrap();
+        assert!(v8.fits_bigdecimal(&junk), "Decimal512(60) holds 94 integer digits");
+        let max: BigDecimal = format!("{}.{}", "9".repeat(94), "9".repeat(60)).parse().unwrap();
+        assert!(v8.fits_bigdecimal(&max));
+        assert!(!v8.fits_bigdecimal(&(max + BigDecimal::from(1u32))));
+        assert_eq!(v8.decimal_scale, 60);
 
-        let event_logger = ctx.base_context().event_logger();
-        let _ = event_logger.emit(&approval_event).await;
+        let v4 = ColumnLimits::for_schema_version(4);
+        let two_pow_255 = BigInt::from(1u32) << 255u32;
+        assert!(v4.fits_bigint(&(two_pow_255.clone() - 1)));
+        assert!(!v4.fits_bigint(&two_pow_255));
+        assert!(v4.fits_bigint(&-two_pow_255));
+    }
 
-        // 📈 METRICS: Track approval-related metrics
-        let approval_counter = ctx.base_context().counter("approval_events_total");
-        let _ = approval_counter.add(1.0, None).await;
-            
-        // Track approval values
-        let allowance_f64 = allowance_value.to_string().parse::<f64>().unwrap_or(0.0);
-        let approval_gauge = ctx.base_context().gauge("approval_value");
-        let _ = approval_gauge.record(allowance_f64, None).await;
-
-        println!("✅ Approval event processing completed - Owner: {}, Spender: {}, Value: {}", 
-                owner_address, spender_address, allowance_value);
+    #[test]
+    fn bytes32_symbols_decode_without_padding() {
+        // "MKR" as returned by 0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2
+        let raw: alloy::primitives::FixedBytes<32> =
+            "0x4d4b520000000000000000000000000000000000000000000000000000000000".parse().unwrap();
+        assert_eq!(bytes32_to_string(raw), "MKR");
+        assert_eq!(bytes32_to_string(alloy::primitives::FixedBytes::ZERO), "");
     }
 }

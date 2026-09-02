@@ -12,7 +12,7 @@ pub mod traits;
 pub mod types;
 
 // Re-export commonly used types and traits
-pub use serialization::{FromRichValue, ToRichValue, from_rich_struct, to_rich_struct};
+pub use serialization::{FromRichValue, ToRichValue, from_rich_struct, serde_with, to_rich_struct};
 pub use store::{Store, StoreContext};
 pub use traits::{Entity, EntityId, EntityStore, Filter, ListOptions, QueryBuilder};
 pub use types::{BigDecimal, BigInt, Bytes, EntityError, EntityResult, ID, Int8, Timestamp};

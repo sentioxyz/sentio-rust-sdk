@@ -64,6 +64,34 @@ impl From<&str> for NumberValue {
     }
 }
 
+impl From<crate::entity::BigDecimal> for NumberValue {
+    fn from(val: crate::entity::BigDecimal) -> Self {
+        NumberValue::BigDecimal(val.to_string())
+    }
+}
+
+impl NumberValue {
+    /// The metric `value` field of a TimeseriesResult: doubles stay doubles, big
+    /// decimals travel as protobuf BigDecimal so precision is preserved end to end
+    /// (an unparsable decimal string falls back to a double).
+    pub fn to_rich_value(&self) -> crate::common::RichValue {
+        use crate::common::rich_value::Value as RV;
+        use crate::common::RichValue;
+        use crate::entity::ToRichValue;
+        match self {
+            NumberValue::Integer(v) => RichValue { value: Some(RV::FloatValue(*v as f64)) },
+            NumberValue::Float(v) => RichValue { value: Some(RV::FloatValue(*v)) },
+            NumberValue::BigDecimal(s) => s
+                .parse::<crate::entity::BigDecimal>()
+                .ok()
+                .and_then(|d| d.to_rich_value().ok())
+                .unwrap_or_else(|| RichValue {
+                    value: Some(RV::FloatValue(s.parse::<f64>().unwrap_or(0.0))),
+                }),
+        }
+    }
+}
+
 /// Options for configuring metrics
 #[derive(Debug, Clone, Default, Builder)]
 pub struct MetricOptions {
@@ -102,7 +130,7 @@ impl Counter {
         use super::RUNTIME_CONTEXT;
         
         let labels = labels.unwrap_or_default();
-        let metric_value = value.into().to_metric_value();
+        let number_value: NumberValue = value.into();
 
         // Create TimeseriesResult with counter data
         let mut timeseries_result = TimeseriesResult {
@@ -110,14 +138,7 @@ impl Counter {
             r#type: crate::processor::timeseries_result::TimeseriesType::Counter as i32,
             data: Some(crate::common::RichStruct {
                 fields: std::collections::HashMap::from([
-                    ("value".to_string(), crate::common::RichValue {
-                        value: Some(crate::common::rich_value::Value::FloatValue(
-                            match metric_value.value.as_ref().unwrap() {
-                                crate::processor::metric_value::Value::DoubleValue(v) => *v,
-                                _ => 0.0,
-                            }
-                        ))
-                    }),
+                    ("value".to_string(), number_value.to_rich_value()),
                     ("add".to_string(), crate::common::RichValue {
                         value: Some(crate::common::rich_value::Value::BoolValue(true))
                     }),
@@ -150,7 +171,7 @@ impl Counter {
         use super::RUNTIME_CONTEXT;
         
         let labels = labels.unwrap_or_default();
-        let metric_value = value.into().to_metric_value();
+        let number_value: NumberValue = value.into();
 
         // Create TimeseriesResult with counter data
         let mut timeseries_result = TimeseriesResult {
@@ -158,14 +179,7 @@ impl Counter {
             r#type: crate::processor::timeseries_result::TimeseriesType::Counter as i32,
             data: Some(crate::common::RichStruct {
                 fields: std::collections::HashMap::from([
-                    ("value".to_string(), crate::common::RichValue {
-                        value: Some(crate::common::rich_value::Value::FloatValue(
-                            match metric_value.value.as_ref().unwrap() {
-                                crate::processor::metric_value::Value::DoubleValue(v) => *v,
-                                _ => 0.0,
-                            }
-                        ))
-                    }),
+                    ("value".to_string(), number_value.to_rich_value()),
                     ("add".to_string(), crate::common::RichValue {
                         value: Some(crate::common::rich_value::Value::BoolValue(false))
                     }),
@@ -225,7 +239,7 @@ impl Gauge {
         use super::RUNTIME_CONTEXT;
         
         let labels = labels.unwrap_or_default();
-        let metric_value = value.into().to_metric_value();
+        let number_value: NumberValue = value.into();
 
         // Create TimeseriesResult with gauge data
         let mut timeseries_result = TimeseriesResult {
@@ -233,14 +247,7 @@ impl Gauge {
             r#type: crate::processor::timeseries_result::TimeseriesType::Gauge as i32,
             data: Some(crate::common::RichStruct {
                 fields: std::collections::HashMap::from([
-                    ("value".to_string(), crate::common::RichValue {
-                        value: Some(crate::common::rich_value::Value::FloatValue(
-                            match metric_value.value.as_ref().unwrap() {
-                                Value::DoubleValue(v) => *v,
-                                _ => 0.0,
-                            }
-                        ))
-                    }),
+                    ("value".to_string(), number_value.to_rich_value()),
                     ("name".to_string(), crate::common::RichValue {
                         value: Some(crate::common::rich_value::Value::StringValue(self.name.clone()))
                     })

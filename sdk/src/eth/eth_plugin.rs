@@ -7,7 +7,7 @@ use crate::eth::eth_processor::{EthProcessorImpl, EthEvent, TimeOrBlock};
 use crate::eth::ParsedEthData;
 use crate::log_filter::AddressOrType;
 use crate::processor::HandlerType;
-use crate::{ConfigureHandlersResponse, ContractConfig, ContractInfo, LogFilter, LogHandlerConfig, Timestamp, Topic};
+use crate::{HandlerConfigs, ContractConfig, ContractInfo, LogFilter, LogHandlerConfig, Timestamp, Topic};
 use anyhow;
 use tracing::debug;
 
@@ -46,7 +46,7 @@ impl Plugin for EthPlugin {
         "eth-plugin"
     }
 
-    fn configure(&mut self, config: &mut ConfigureHandlersResponse) {
+    fn configure(&mut self, config: &mut HandlerConfigs) {
         debug!("Configuring EthPlugin handlers for all chains");
 
         for (processor_idx, processor) in self.processors.iter().enumerate() {
@@ -254,21 +254,14 @@ impl EthPlugin {
 
 impl crate::ProcessResult {
     fn merge(mut self, other: crate::ProcessResult) -> Self {
-        // Extend vectors with other's values
-        self.gauges.extend(other.gauges);
-        self.counters.extend(other.counters);
-        #[allow(deprecated)]
-        self.logs.extend(other.logs);
-        self.events.extend(other.events);
+        // Extend vectors with other's values. Only the v4 result fields are merged;
+        // the legacy gauges/counters/events fields are never written by this SDK.
         self.exports.extend(other.exports);
         self.timeseries_result.extend(other.timeseries_result);
 
-        // Merge states - combine config_updated flags and errors
+        // Merge states - combine errors
         match (self.states.as_mut(), other.states) {
             (Some(self_state), Some(other_state)) => {
-                // If either has config_updated = true, result should be true
-                self_state.config_updated = self_state.config_updated || other_state.config_updated;
-
                 // Combine errors - if both have errors, concatenate them
                 match (&self_state.error, other_state.error) {
                     (Some(self_error), Some(other_error)) => {
@@ -352,7 +345,7 @@ impl PluginRegister<EthProcessorImpl> for EthPlugin {
 mod tests {
     use super::*;
     use crate::eth::eth_processor::EthProcessor;
-    use crate::ConfigureHandlersResponse;
+    use crate::HandlerConfigs;
     use crate::eth::EthEventHandler;
 
     #[derive(Clone)]
@@ -404,7 +397,7 @@ mod tests {
     #[test]
     fn test_configure_method() {
         let mut plugin = EthPlugin::default();
-        let mut config = ConfigureHandlersResponse::default();
+        let mut config = HandlerConfigs::default();
 
         // Create a test processor using the new trait-based API
         let processor_impl = TestProcessor::new()

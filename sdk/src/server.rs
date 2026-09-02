@@ -1,7 +1,7 @@
 use crate::processor::processor_v3_server::ProcessorV3Server as TonicProcessorV3Server;
 use crate::service::ProcessorService;
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::net::SocketAddr;
 use tonic::transport::Server as TonicServer;
 use tracing::{debug, error, info};
@@ -27,6 +27,13 @@ pub struct ServerArgs {
     #[arg(long, default_value = "600")]
     pub process_binding_timeout: u64,
 
+    /// Number of consecutive ports to listen on, starting at --port. The platform
+    /// starts a processor uploaded with N workers as `--worker=N` and the driver
+    /// connects to port..port+N-1 (the TypeScript runtime forks one process per
+    /// port). One multi-threaded Rust process serves all of them.
+    #[arg(long, default_value = "1")]
+    pub worker: u16,
+
     /// Port for profiling HTTP server
     #[cfg(feature = "profiling")]
     #[arg(long, default_value = "4040")]
@@ -35,6 +42,67 @@ pub struct ServerArgs {
     /// Additional unrecognized arguments
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub extra_args: Vec<String>,
+}
+
+impl ServerArgs {
+    /// Parse `std::env::args()` while tolerating flags this server does not know.
+    ///
+    /// The platform launches every processor with the TypeScript runner's full
+    /// flag set (`--pricefeed-server=…`, `--log-format=json`, `--use-chainserver`,
+    /// …) interleaved with ours. clap's trailing var-arg would swallow everything
+    /// after the first unknown flag — including `--worker=8` — so known flags are
+    /// picked out first and the rest is kept verbatim in `extra_args`.
+    pub fn parse_lenient() -> Self {
+        Self::parse_lenient_from(std::env::args())
+    }
+
+    pub fn parse_lenient_from<I, T>(args: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<String>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let program = args.next().unwrap_or_else(|| "processor".to_string());
+
+        // (long, short, takes a value) for every flag declared on ServerArgs
+        let known: Vec<(Option<String>, Option<char>, bool)> = Self::command()
+            .get_arguments()
+            .filter(|a| a.get_id() != "extra_args")
+            .map(|a| (a.get_long().map(str::to_string), a.get_short(), a.get_action().takes_values()))
+            .collect();
+        let lookup = |token: &str| -> Option<bool> {
+            known.iter().find_map(|(long, short, takes_value)| {
+                let is_long = long.as_deref().is_some_and(|l| token == format!("--{}", l));
+                let is_short = short.is_some_and(|c| token == format!("-{}", c));
+                (is_long || is_short).then_some(*takes_value)
+            })
+        };
+
+        let mut ours = vec![program];
+        let mut extra = Vec::new();
+        let mut args = args.peekable();
+        while let Some(token) = args.next() {
+            let (name, inline_value) = match token.split_once('=') {
+                Some((n, v)) if n.starts_with('-') => (n.to_string(), Some(v.to_string())),
+                _ => (token.clone(), None),
+            };
+            match lookup(&name) {
+                Some(takes_value) => {
+                    ours.push(token);
+                    if takes_value && inline_value.is_none() {
+                        if let Some(value) = args.next() {
+                            ours.push(value);
+                        }
+                    }
+                }
+                None => extra.push(token),
+            }
+        }
+
+        let mut parsed = Self::parse_from(ours);
+        parsed.extra_args = extra;
+        parsed
+    }
 }
 
 /// Sentio Processor gRPC Server
@@ -118,7 +186,7 @@ impl Server {
     /// Internal method that returns Result for error handling
     fn try_start(mut self) -> Result<()> {
         // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
+        let args = self.args.clone().unwrap_or_else(ServerArgs::parse_lenient);
         // Initialize logging
         Self::init_logging(args.debug);
 
@@ -134,7 +202,7 @@ impl Server {
     /// Returns Result for manual error handling (unlike the blocking start() method)
     pub async fn start_async(self) -> Result<()> {
         // Parse command line arguments or use provided args
-        let args = self.args.clone().unwrap_or_else(ServerArgs::parse);
+        let args = self.args.clone().unwrap_or_else(ServerArgs::parse_lenient);
 
         // Initialize logging
         Self::init_logging(args.debug);
@@ -144,9 +212,19 @@ impl Server {
 
         // execution_config will be constructed below before serving
 
-        let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+        let addrs = listen_ports(args.port, args.worker)
+            .into_iter()
+            .map(|port| format!("{}:{}", args.host, port).parse::<SocketAddr>())
+            .collect::<Result<Vec<_>, _>>()?;
 
-        info!("🚀 Starting Sentio Processor server on {}", addr);
+        match addrs.as_slice() {
+            [addr] => info!("🚀 Starting Sentio Processor server on {}", addr),
+            [first, .., last] => info!(
+                "🚀 Starting Sentio Processor server on {} .. {} ({} ports)",
+                first, last, addrs.len()
+            ),
+            [] => unreachable!("listen_ports always yields at least one port"),
+        }
         debug!("Server configuration: {:?}", args);
 
         #[cfg(feature = "profiling")]
@@ -206,22 +284,101 @@ impl Server {
             exec_cfg,
         );
 
-        let mut server = TonicProcessorV3Server::new(service)
-            .accept_compressed(tonic::codec::CompressionEncoding::Gzip);
-        if std::env::var("GRPC_ENABLE_COMPRESS").is_ok()
-            && std::env::var("GRPC_ENABLE_COMPRESS")? == "true"
-        {
-            server = server.send_compressed(tonic::codec::CompressionEncoding::Gzip);
-        }
+        let send_compressed =
+            matches!(std::env::var("GRPC_ENABLE_COMPRESS"), Ok(v) if v == "true");
 
-        TonicServer::builder()
-            .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
-            .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
-            .add_service(server)
-            .serve(addr)
-            .await?;
+        // Every port gets its own listener but they all share the same service
+        // (and thus the same plugins / processors) on this runtime.
+        let servers = addrs.into_iter().map(|addr| {
+            let mut server = TonicProcessorV3Server::new(service.clone())
+                .accept_compressed(tonic::codec::CompressionEncoding::Gzip);
+            if send_compressed {
+                server = server.send_compressed(tonic::codec::CompressionEncoding::Gzip);
+            }
+            TonicServer::builder()
+                .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
+                .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
+                .add_service(server)
+                .serve(addr)
+        });
+        futures::future::try_join_all(servers).await?;
 
         Ok(())
+    }
+}
+
+/// Ports served for `--port <base> --worker <n>`: `base..base+n-1`, clamped to the
+/// valid port range and never empty.
+pub fn listen_ports(base: u16, worker: u16) -> Vec<u16> {
+    let count = worker.max(1);
+    (0..count)
+        .map_while(|i| base.checked_add(i))
+        .collect()
+}
+
+#[cfg(test)]
+mod parse_args_tests {
+    use super::ServerArgs;
+
+    #[test]
+    fn platform_launch_flags_are_parsed_regardless_of_order() {
+        // Exactly what the k8s launcher passes to a binary processor.
+        let args = ServerArgs::parse_lenient_from([
+            "main",
+            "--port=9999",
+            "--pricefeed-server=prod-price-server.prod:10070",
+            "--chainquery-server=prod-chainquery-server:6809",
+            "--log-format=json",
+            "--concurrency=128",
+            "--worker=8",
+            "--use-chainserver",
+            "--chains-config=/tmp/sentio/chains-config.json",
+        ]);
+        assert_eq!(args.port, 9999);
+        assert_eq!(args.worker, 8);
+        assert_eq!(args.host, "0.0.0.0");
+        assert_eq!(
+            args.extra_args,
+            vec![
+                "--pricefeed-server=prod-price-server.prod:10070",
+                "--chainquery-server=prod-chainquery-server:6809",
+                "--log-format=json",
+                "--concurrency=128",
+                "--use-chainserver",
+                "--chains-config=/tmp/sentio/chains-config.json",
+            ]
+        );
+    }
+
+    #[test]
+    fn space_separated_values_and_short_flags_still_work() {
+        let args = ServerArgs::parse_lenient_from(["main", "--unknown", "-p", "4123", "--worker", "2", "-d", "--host=127.0.0.1"]);
+        assert_eq!(args.port, 4123);
+        assert_eq!(args.worker, 2);
+        assert!(args.debug);
+        assert_eq!(args.host, "127.0.0.1");
+        assert_eq!(args.extra_args, vec!["--unknown"]);
+    }
+
+    #[test]
+    fn defaults_apply_with_no_arguments() {
+        let args = ServerArgs::parse_lenient_from(["main"]);
+        assert_eq!(args.port, 4000);
+        assert_eq!(args.worker, 1);
+        assert!(args.extra_args.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod listen_ports_tests {
+    use super::listen_ports;
+
+    #[test]
+    fn worker_count_expands_to_consecutive_ports() {
+        assert_eq!(listen_ports(9999, 0), vec![9999]);
+        assert_eq!(listen_ports(9999, 1), vec![9999]);
+        assert_eq!(listen_ports(9999, 3), vec![9999, 10000, 10001]);
+        assert_eq!(listen_ports(65534, 4), vec![65534, 65535]);
     }
 }
 

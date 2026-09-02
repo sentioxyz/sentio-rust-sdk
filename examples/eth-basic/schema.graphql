@@ -1,65 +1,27 @@
-# Core token transfer entity for tracking ERC-20 transfers
-type Transfer @entity {
-    id: ID!
-    transactionHash: String!
-    blockNumber: BigInt!
-    timestamp: Timestamp!
-    from: String!
-    to: String!
-    value: BigDecimal!
-    contract: String!
-    logIndex: Int!
-    # Single direct relation - each transfer references its token contract
-    tokenContract: TokenContract
+# Token metadata, one row per (chain, address). The id is chainId-address, which
+# already gives that pair a unique index.
+type Token @entity {
+  id: ID! # chainId-address
+  chain: String! @index
+  address: String! @index
+  symbol: String! @index
+  name: String!
+  decimals: Int!
+  transfers: [Transfer!]! @derivedFrom(field: "token")
 }
 
-# Approval events for ERC-20 tokens
-type Approval @entity {
-    id: ID!
-    transactionHash: String!
-    blockNumber: BigInt!
-    timestamp: Timestamp!
-    owner: String!
-    spender: String!
-    value: BigDecimal!
-    contract: String!
-    logIndex: Int!
-}
-
-# Account entity to track wallet interactions
-type Account @entity {
-    id: ID!
-    address: String! @unique
-    firstSeen: Timestamp!
-    lastActive: Timestamp!
-    transferCount: BigInt!
-    totalTransferred: BigDecimal!
-    transfers: [Transfer!]! @derivedFrom(field: "from")
-    received: [Transfer!]! @derivedFrom(field: "to")
-    approvals: [Approval!]! @derivedFrom(field: "owner")
-}
-
-# Contract entity to track token contract metadata
-type TokenContract @entity {
-    id: ID!
-    address: String! @unique
-    name: String
-    symbol: String
-    decimals: Int
-    totalSupply: BigDecimal
-    transferCount: BigInt!
-    holderCount: BigInt!
-    createdAt: Timestamp!
-    # Many direct relation - a token contract can reference multiple related transfers
-    relatedTransfers: [Transfer]!
-}
-
-# Daily statistics for analytics (timeseries entity)
-type DailyStats @entity(timeseries: true) {
-    id: Int8!
-    timestamp: Timestamp!
-    transferCount: BigInt!
-    uniqueUsers: BigInt!
-    totalVolume: BigDecimal!
-    contractsActive: BigInt!
+# One row per ERC20 Transfer log.
+type Transfer @entity(immutable: true) {
+  id: ID! # chainId-txHash-logIndex
+  chain: String! @index
+  token: Token!
+  tokenAddress: String! @index # denormalized so it can be filtered without a join
+  from: String! @index
+  to: String! @index
+  value: BigDecimal! # scaled by decimals, falls back to raw when metadata is unavailable
+  valueRaw: BigInt!
+  blockNumber: Int!
+  timestamp: Timestamp! @index
+  txHash: String! @index
+  logIndex: Int!
 }

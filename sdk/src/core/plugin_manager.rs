@@ -107,7 +107,7 @@ impl PluginManager {
     /// Configure all plugins for a specific chain_id
     pub fn configure_all_plugins(
         &self,
-        response: &mut crate::processor::ConfigureHandlersResponse,
+        response: &mut crate::core::plugin::HandlerConfigs,
     ) {
         // First collect the plugin names to avoid borrow checker issues
         let plugin_names: Vec<String> = self.plugins.iter().map(|entry| entry.key().clone()).collect();

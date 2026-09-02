@@ -3,6 +3,7 @@
 use crate::codegen::{CodeGenerator, CodegenResult};
 use crate::entity::schema::parser::SchemaParser;
 use crate::entity::schema::{EntitySchema, EntityType, FieldDefinition, FieldType};
+use crate::entity::types::ScalarType;
 use anyhow::{Context, Result};
 use convert_case::{Case, Casing};
 use rust_codegen::{Field, Function, Impl, Scope, Struct, Type};
@@ -174,6 +175,9 @@ impl EntityCodeGenerator {
             }
             if is_optional {
                 annotations.push("#[builder(default)]".to_string());
+            }
+            if let Some(attr) = Self::serialize_with_attr(&field.field_type) {
+                annotations.push(attr);
             }
 
             let f = Field {
@@ -365,6 +369,23 @@ impl EntityCodeGenerator {
     }
 
     /// Convert FieldType to Rust type string
+    /// BigInt / BigDecimal fields need `sentio_sdk::entity::serde_with` so they are
+    /// stored as `bigint_value` / `bigdecimal_value`; their Rust types otherwise
+    /// serialize generically (tuple / string) and the platform rejects them.
+    fn serialize_with_attr(field_type: &FieldType) -> Option<String> {
+        let base = match field_type.base_type() {
+            FieldType::Scalar(ScalarType::BigInt) => "bigint",
+            FieldType::Scalar(ScalarType::BigDecimal) => "bigdecimal",
+            _ => return None,
+        };
+        // `field_type_to_rust` maps any List to Vec<_> and never wraps in Option.
+        let shape = if field_type.is_list() { "_vec" } else { "" };
+        Some(format!(
+            "#[serde(serialize_with = \"sentio_sdk::entity::serde_with::{}{}\")]",
+            base, shape
+        ))
+    }
+
     fn field_type_to_rust(
         &self,
         field_type: &FieldType,

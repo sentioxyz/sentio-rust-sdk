@@ -39,8 +39,18 @@ where
 {
 
     /// Register a new handler and return its unique ID (index in the vector)
-    pub fn register(&mut self, chain_id: &str, handler_type: T, processor_idx: usize, handler_idx: usize) -> i32 {
+    pub fn register(&mut self, chain_id: &str, handler_type: T, processor_idx: usize, handler_idx: usize) -> i32
+    where
+        T: PartialEq,
+    {
         let chain_handlers = self.handlers.entry(chain_id.to_string()).or_default();
+        // Idempotent: GetConfig is called once per driver connection (and again on
+        // UpdateTemplates), and the driver rejects configs whose handler ids differ.
+        if let Some(existing) = chain_handlers.iter().find(|h| {
+            h.processor_idx == processor_idx && h.handler_idx == handler_idx && h.handler_type == handler_type
+        }) {
+            return existing.handle_id;
+        }
         let handle_id = chain_handlers.len() as i32;
         
         let handler_info = HandlerInfo {
@@ -299,5 +309,19 @@ mod tests {
             assert_eq!(processor_idx, 0);
             assert_eq!(handler_idx, i);
         }
+    }
+
+    #[test]
+    fn registering_the_same_handler_twice_returns_the_same_id() {
+        let mut reg: HandlerRegister<TestHandlerType> = HandlerRegister::new();
+        let a = reg.register("1", TestHandlerType::default(), 0, 0);
+        let b = reg.register("1", TestHandlerType::default(), 0, 1);
+        assert_eq!((a, b), (0, 1));
+        // A second configure pass must not allocate new ids.
+        assert_eq!(reg.register("1", TestHandlerType::default(), 0, 0), 0);
+        assert_eq!(reg.register("1", TestHandlerType::default(), 0, 1), 1);
+        assert_eq!(reg.get_handlers_for_chain("1").len(), 2);
+        // Other chains keep their own id space.
+        assert_eq!(reg.register("10", TestHandlerType::default(), 0, 0), 0);
     }
 }

@@ -10,10 +10,6 @@ description = "Ethereum log decoding processor using Sentio SDK"
 name = "eth-decode-log"
 path = "src/main.rs"
 
-[[bin]]
-name = "eth-decode-log-prof"
-path = "src/profile.rs"
-
 [dependencies]
 sentio-sdk = { path = "../../sdk", features = ["benchmark"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -122,7 +122,6 @@ impl EthEventHandler<TransferEvent> for TestErc20Processor {
             ctx.base_context().event_logger().emit(&event).await.ok();
         }
 
-        ctx.set_config_updated(true);
         println!("Transfer event processing completed!");
     }
 }
@@ -165,7 +164,6 @@ impl EthEventHandler<ApprovalEvent> for TestErc20Processor {
             ctx.base_context().event_logger().emit(&event).await.ok();
         }
 
-        ctx.set_config_updated(true);
         println!("Approval event processing completed!");
     }
 }

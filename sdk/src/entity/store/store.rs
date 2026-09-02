@@ -52,7 +52,6 @@ impl<B: StorageBackend> StoreImpl<B> {
                     .collect::<Result<Vec<T>>>()
             }
             Value::Error(err) => Err(anyhow!("Database error: {}", err)),
-            _ => Err(anyhow!("Unsupported db_response::Value variant")),
         }
     }
 }

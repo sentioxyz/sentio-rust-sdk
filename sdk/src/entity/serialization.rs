@@ -39,6 +39,75 @@ impl serde::de::Error for SerdeError {
     }
 }
 
+/// Newtype names used by [`serde_with`] to tag values that must become
+/// `bigint_value` / `bigdecimal_value` even though their Rust type serializes
+/// generically. Only [`RichValueSerializer`] gives them special meaning.
+pub const BIGINT_TAG: &str = "__sentio_bigint";
+pub const BIGDECIMAL_TAG: &str = "__sentio_bigdecimal";
+
+/// `#[serde(serialize_with = "...")]` helpers for entity fields whose GraphQL
+/// scalar has a dedicated RichValue encoding but whose Rust type serializes
+/// generically: `num_bigint::BigInt` as a `(sign, u32 digits)` tuple and
+/// `bigdecimal::BigDecimal` as a string. The helpers wrap the decimal text in a
+/// tagged newtype that [`RichValueSerializer`] turns into the proper protobuf
+/// value; any other serde serializer (serde_json, ...) just sees the string.
+/// Deserialization needs no counterpart: the RichValue deserializer already
+/// feeds `bigint_value` / `bigdecimal_value` back in the shape serde expects.
+pub mod serde_with {
+    use super::{BIGDECIMAL_TAG, BIGINT_TAG};
+    use crate::entity::types::{BigDecimal, BigInt};
+    use serde::ser::{Serialize, SerializeSeq, Serializer};
+
+    struct Tagged {
+        tag: &'static str,
+        text: String,
+    }
+
+    impl Serialize for Tagged {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_newtype_struct(self.tag, &self.text)
+        }
+    }
+
+    pub fn bigint<S: Serializer>(value: &BigInt, serializer: S) -> Result<S::Ok, S::Error> {
+        Tagged { tag: BIGINT_TAG, text: value.to_string() }.serialize(serializer)
+    }
+
+    pub fn bigint_opt<S: Serializer>(value: &Option<BigInt>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(v) => bigint(v, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn bigint_vec<S: Serializer>(values: &[BigInt], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for v in values {
+            seq.serialize_element(&Tagged { tag: BIGINT_TAG, text: v.to_string() })?;
+        }
+        seq.end()
+    }
+
+    pub fn bigdecimal<S: Serializer>(value: &BigDecimal, serializer: S) -> Result<S::Ok, S::Error> {
+        Tagged { tag: BIGDECIMAL_TAG, text: value.to_string() }.serialize(serializer)
+    }
+
+    pub fn bigdecimal_opt<S: Serializer>(value: &Option<BigDecimal>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(v) => bigdecimal(v, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn bigdecimal_vec<S: Serializer>(values: &[BigDecimal], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for v in values {
+            seq.serialize_element(&Tagged { tag: BIGDECIMAL_TAG, text: v.to_string() })?;
+        }
+        seq.end()
+    }
+}
+
 /// Trait for direct serialization to RichValue without JSON intermediate
 pub trait ToRichValue {
     fn to_rich_value(&self) -> Result<RichValue>;
@@ -634,6 +703,13 @@ impl serde::Serializer for RichStructSerializer {
     }
 }
 
+fn tagged_text(inner: RichValue, tag: &str) -> Result<String, SerdeError> {
+    match inner.value {
+        Some(rich_value::Value::StringValue(s)) => Ok(s),
+        other => Err(SerdeError(format!("{} newtype must wrap a string, got {:?}", tag, other))),
+    }
+}
+
 /// Serializer for RichValue (used for nested values)
 pub struct RichValueSerializer {
     _phantom: std::marker::PhantomData<()>,
@@ -767,13 +843,27 @@ impl serde::Serializer for RichValueSerializer {
 
     fn serialize_newtype_struct<T: ?Sized>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
         T: Serialize,
     {
-        value.serialize(self)
+        // Tagged newtypes from `serde_with` carry the decimal text of a BigInt /
+        // BigDecimal; turn them into the dedicated protobuf encodings.
+        match name {
+            BIGINT_TAG => {
+                let text = tagged_text(value.serialize(RichValueSerializer::new())?, name)?;
+                let parsed = text.parse::<BigInt>().map_err(|e| SerdeError(format!("invalid BigInt '{}': {}", text, e)))?;
+                parsed.to_rich_value().map_err(|e| SerdeError(e.to_string()))
+            }
+            BIGDECIMAL_TAG => {
+                let text = tagged_text(value.serialize(RichValueSerializer::new())?, name)?;
+                let parsed = text.parse::<BigDecimal>().map_err(|e| SerdeError(format!("invalid BigDecimal '{}': {}", text, e)))?;
+                parsed.to_rich_value().map_err(|e| SerdeError(e.to_string()))
+            }
+            _ => value.serialize(self),
+        }
     }
 
     fn serialize_newtype_variant<T: ?Sized>(
@@ -2579,5 +2669,43 @@ mod tests {
             converted_entity.data,
             Bytes::from(vec![0x01, 0x02, 0x03, 0x04, 0x05])
         );
+    }
+}
+
+#[cfg(test)]
+mod serde_with_tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Amounts {
+        #[serde(serialize_with = "serde_with::bigint")]
+        raw: BigInt,
+        #[serde(serialize_with = "serde_with::bigdecimal")]
+        scaled: BigDecimal,
+        #[serde(serialize_with = "serde_with::bigint_vec")]
+        history: Vec<BigInt>,
+    }
+
+    #[test]
+    fn tagged_fields_serialize_to_dedicated_rich_values_and_round_trip() {
+        let amounts = Amounts {
+            raw: "-622080000000000000000000000".parse().unwrap(),
+            scaled: "622080000.000000000000000001".parse().unwrap(),
+            history: vec![BigInt::from(1), BigInt::from(-2)],
+        };
+        let rich = to_rich_struct(&amounts).unwrap();
+
+        assert!(matches!(rich.fields["raw"].value, Some(rich_value::Value::BigintValue(_))), "{:?}", rich.fields["raw"]);
+        assert!(matches!(rich.fields["scaled"].value, Some(rich_value::Value::BigdecimalValue(_))), "{:?}", rich.fields["scaled"]);
+        match &rich.fields["history"].value {
+            Some(rich_value::Value::ListValue(list)) => {
+                assert!(list.values.iter().all(|v| matches!(v.value, Some(rich_value::Value::BigintValue(_)))));
+            }
+            other => panic!("expected list, got {:?}", other),
+        }
+
+        let back: Amounts = from_rich_struct(&rich).unwrap();
+        assert_eq!(back, amounts);
     }
 }

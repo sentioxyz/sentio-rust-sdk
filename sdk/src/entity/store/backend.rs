@@ -141,7 +141,6 @@ impl StorageBackend for RemoteBackend {
         let op = Op::Upsert(DbUpsert {
             entity: table,
             id,
-            data: vec![],
             entity_data: data,
         });
         let req = self.new_request(op);

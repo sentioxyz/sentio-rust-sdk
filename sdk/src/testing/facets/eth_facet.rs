@@ -64,11 +64,7 @@ impl EthTestFacet {
         let raw_log = serde_json::to_string(log).unwrap_or_default();
         
         let eth_log = data::EthLog {
-            log: None, // Deprecated field
             timestamp: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
-            transaction: None, // Deprecated field
-            transaction_receipt: None, // Deprecated field
-            block: None, // Deprecated field
             raw_log,
             raw_transaction: None,
             raw_transaction_receipt: None,
@@ -110,8 +106,9 @@ impl EthTestFacet {
                 let log_address = format!("{:?}", log.address()).to_lowercase();
                 let contract_address = contract.address.to_lowercase();
 
-                // address match
-                if log_address == contract_address || contract_address != "*" || contract_address != "" {
+                // wildcard bindings receive every log on the chain
+                let wildcard = contract_address.is_empty() || contract_address == "*";
+                if wildcard || log_address == contract_address {
                     // Check log handlers for topic matches
                     for log_config in &contract_config.log_configs {
                         for filter in &log_config.filters {

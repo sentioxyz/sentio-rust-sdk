@@ -18,9 +18,11 @@ pub fn proto_to_bigint(proto: &ProtoBigInteger) -> BigInt {
 }
 
 pub fn bigdecimal_to_proto(value: &BigDecimal) -> ProtoBigDecimal {
+    // bigdecimal: value = mantissa * 10^(-scale); proto (and the Go side's
+    // decimal.NewFromBigInt): value = mantissa * 10^exp. So exp = -scale.
     let (mantissa_bigint, scale) = value.as_bigint_and_exponent();
     let proto_mantissa = bigint_to_proto(&mantissa_bigint);
-    ProtoBigDecimal { value: Some(proto_mantissa), exp: scale as i32 }
+    ProtoBigDecimal { value: Some(proto_mantissa), exp: -(scale as i32) }
 }
 
 pub fn proto_to_bigdecimal(proto: &ProtoBigDecimal) -> Result<BigDecimal> {
@@ -34,3 +36,21 @@ pub fn proto_to_bigdecimal(proto: &ProtoBigDecimal) -> Result<BigDecimal> {
     Ok(BigDecimal::new(mantissa_bigint, scale))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bigdecimal_round_trips_and_uses_go_exponent_semantics() {
+        for text in ["1.5", "622080000.000000000000000001", "-0.001", "1000000000000000000", "1E+30", "0"] {
+            let value: BigDecimal = text.parse().unwrap();
+            let proto = bigdecimal_to_proto(&value);
+            assert_eq!(proto_to_bigdecimal(&proto).unwrap(), value, "{}", text);
+        }
+        // The platform decodes value = mantissa * 10^exp, so 1.5 is (15, -1).
+        let proto = bigdecimal_to_proto(&"1.5".parse().unwrap());
+        assert_eq!(proto.exp, -1);
+        assert_eq!(proto_to_bigint(proto.value.as_ref().unwrap()).to_string(), "15");
+    }
+}

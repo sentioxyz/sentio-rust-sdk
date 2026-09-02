@@ -1,7 +1,7 @@
 use crate::{processor::TimeseriesResult, ProcessStreamResponseV3, Store, Timestamp};
 use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tonic::Status;
 use tracing::debug;
 // Re-export EventLogger trait from event_logger module
@@ -78,15 +78,6 @@ pub trait Context: Send + Sync {
         self.metadata().log_index
     }
 
-    fn set_config_updated(&mut self, updated: bool) {
-        self.base_context().config_updated = updated;
-        
-        // Also collect the state change if collector is available
-        if let Some(collector) = self.state_collector() {
-            collector.set_config_updated(updated);
-        }
-    }
-    
     /// Report error with state collection
     fn report_error(&self, error: String) {
         if let Some(collector) = self.state_collector() {
@@ -99,14 +90,12 @@ pub trait Context: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct BaseContext {
-    config_updated: bool,
-}
+pub struct BaseContext {}
 
 impl BaseContext {
     /// Create a new BaseContext
     pub fn new() -> Self {
-        Self { config_updated: false }
+        Self {}
     }
 
     /// Create a new pure Event Logger
@@ -146,6 +135,10 @@ impl Default for BaseContext {
     }
 }
 
+/// Maximum number of `TimeseriesResult`s carried by one `TsRequest` message.
+/// Matches `TIME_SERIES_RESULT_BATCH_SIZE` in the TypeScript runtime.
+pub const TIMESERIES_BATCH_SIZE: usize = 1000;
+
 /// Runtime context for processing requests with event logger support
 #[derive(Clone)]
 pub struct RuntimeContext {
@@ -156,8 +149,19 @@ pub struct RuntimeContext {
     /// Metadata for this runtime context (Arc for lightweight cloning)
     pub metadata: Arc<MetaData>,
 
-    pub remote_backend: Arc<Backend>
- }
+    pub remote_backend: Arc<Backend>,
+
+    /// Handler type of the binding being processed; stamped into
+    /// `RuntimeInfo.from` on every emitted result (mirrors `recordRuntimeInfo`
+    /// in the TypeScript runtime).
+    pub handler_type: i32,
+
+    /// Timeseries results buffered for the current binding. Shared by every
+    /// clone of this context (one binding = one buffer) and flushed in batches
+    /// of [`TIMESERIES_BATCH_SIZE`], plus a final [`flush_timeseries`] before
+    /// the binding's result is sent.
+    ts_buffer: Arc<Mutex<Vec<TimeseriesResult>>>,
+}
 
 impl RuntimeContext {
     /// Create a new RuntimeContext with the given event logger sender, process ID, and metadata
@@ -170,7 +174,9 @@ impl RuntimeContext {
             tx,
             process_id,
             metadata: Arc::new(metadata),
-            remote_backend: Arc::new(Backend::remote())
+            remote_backend: Arc::new(Backend::remote()),
+            handler_type: crate::processor::HandlerType::Unknown as i32,
+            ts_buffer: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -195,8 +201,16 @@ impl RuntimeContext {
             tx,
             process_id,
             metadata: Arc::new(metadata),
-            remote_backend
+            remote_backend,
+            handler_type: crate::processor::HandlerType::Unknown as i32,
+            ts_buffer: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Set the handler type of the binding this context is processing
+    pub fn with_handler_type(mut self, handler_type: i32) -> Self {
+        self.handler_type = handler_type;
+        self
     }
 
     /// Update the metadata in this runtime context
@@ -225,33 +239,57 @@ impl RuntimeContext {
         }
     }
 
-    /// Emit a TimeseriesResult through the stream
+    /// Buffer a TimeseriesResult for the current binding; a full batch is sent
+    /// immediately, the remainder on [`flush_timeseries`].
     pub async fn send_timeseries_result(
         &self,
         name: &str,
         mut timeseries_result: TimeseriesResult,
     ) -> Result<()> {
-        use crate::processor::TsRequest;
-
         timeseries_result.metadata = Some(self.to_record_metadata(name));
+        timeseries_result.runtime_info = Some(crate::processor::RuntimeInfo {
+            from: self.handler_type,
+        });
 
-        let ts_request = TsRequest {
-            data: vec![timeseries_result],
+        let full_batch = {
+            let mut buffer = self.ts_buffer.lock().expect("ts_buffer poisoned");
+            buffer.push(timeseries_result);
+            if buffer.len() >= TIMESERIES_BATCH_SIZE {
+                Some(std::mem::take(&mut *buffer))
+            } else {
+                None
+            }
         };
+        if let Some(batch) = full_batch {
+            self.send_ts_batch(batch).await?;
+        }
+        Ok(())
+    }
 
-        // Create ProcessStreamResponseV3 with TsRequest
+    /// Send every buffered TimeseriesResult. Must be called once the binding's
+    /// handlers have finished and before its `result` message is emitted.
+    pub async fn flush_timeseries(&self) -> Result<()> {
+        let batch = std::mem::take(&mut *self.ts_buffer.lock().expect("ts_buffer poisoned"));
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.send_ts_batch(batch).await
+    }
+
+    async fn send_ts_batch(&self, batch: Vec<TimeseriesResult>) -> Result<()> {
+        use crate::processor::TsRequest;
+        let count = batch.len();
         let response = ProcessStreamResponseV3 {
             process_id: self.process_id,
-            value: Some(crate::processor::process_stream_response_v3::Value::TsRequest(ts_request)),
+            value: Some(crate::processor::process_stream_response_v3::Value::TsRequest(
+                TsRequest { data: batch },
+            )),
         };
-
-        // Send through the channel
         self.tx
             .send(Ok(response))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send timeseries result: {}", e))?;
-
-        debug!("Emitted TimeseriesResult");
+        debug!("Emitted TsRequest with {} result(s)", count);
         Ok(())
     }
 
@@ -277,7 +315,6 @@ tokio::task_local! {
 /// Types of state updates that can occur in handlers
 #[derive(Debug, Clone)]
 pub enum StateUpdate {
-    ConfigUpdated(bool),
     Error(String),
 }
 
@@ -294,14 +331,9 @@ impl StateCollector {
         (Self { sender }, receiver)
     }
     
-    /// Record a config update state change
-    pub fn set_config_updated(&self, updated: bool) {
-        // Ignore send errors - if receiver is dropped, we just lose the update
-        let _ = self.sender.send(StateUpdate::ConfigUpdated(updated));
-    }
-    
-    /// Record an error state change  
+    /// Record an error state change
     pub fn report_error(&self, error: String) {
+        // Ignore send errors - if receiver is dropped, we just lose the update
         let _ = self.sender.send(StateUpdate::Error(error));
     }
     
@@ -325,33 +357,64 @@ impl StateUpdateCollector {
     /// Collect all pending state updates into a ProcessResult (non-blocking)
     pub fn collect_updates(&mut self) -> crate::processor::ProcessResult {
         let mut result = crate::processor::ProcessResult::default();
-        let mut config_updated = false;
         let mut errors = Vec::new();
-        
+
         // Drain all available updates without blocking
         while let Ok(update) = self.receiver.try_recv() {
             match update {
-                StateUpdate::ConfigUpdated(updated) => {
-                    config_updated = config_updated || updated;
-                }
                 StateUpdate::Error(error) => {
                     errors.push(error);
                 }
             }
         }
-        
+
         // Only create StateResult if we have updates
-        if config_updated || !errors.is_empty() {
+        if !errors.is_empty() {
             result.states = Some(crate::processor::StateResult {
-                config_updated,
-                error: if errors.is_empty() { 
-                    None 
-                } else { 
-                    Some(errors.join("; "))
-                },
+                error: Some(errors.join("; ")),
+                ..Default::default()
             });
         }
         
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processor::process_stream_response_v3::Value;
+
+    fn ts_count(msg: Result<ProcessStreamResponseV3, Status>) -> usize {
+        match msg.unwrap().value {
+            Some(Value::TsRequest(req)) => req.data.len(),
+            other => panic!("expected TsRequest, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn timeseries_results_are_batched_and_flushed() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let ctx = RuntimeContext::new(tx, 7, MetaData::default());
+
+        for _ in 0..TIMESERIES_BATCH_SIZE + 1 {
+            ctx.send_timeseries_result("m", TimeseriesResult::default()).await.unwrap();
+        }
+        // A full batch goes out as soon as it is complete...
+        assert_eq!(ts_count(rx.recv().await.unwrap()), TIMESERIES_BATCH_SIZE);
+        assert!(rx.try_recv().is_err(), "remainder must stay buffered until flush");
+
+        // ...and the remainder only on flush, stamped with metadata + runtime info.
+        ctx.flush_timeseries().await.unwrap();
+        let msg = rx.recv().await.unwrap().unwrap();
+        assert_eq!(msg.process_id, 7);
+        let Some(Value::TsRequest(req)) = msg.value else { panic!("expected TsRequest") };
+        assert_eq!(req.data.len(), 1);
+        assert_eq!(req.data[0].metadata.as_ref().unwrap().name, "m");
+        assert_eq!(req.data[0].runtime_info.as_ref().unwrap().from, ctx.handler_type);
+
+        // Flushing an empty buffer sends nothing.
+        ctx.flush_timeseries().await.unwrap();
+        assert!(rx.try_recv().is_err());
     }
 }

@@ -218,6 +218,16 @@ pub trait EthProcessor: Send + Sync + 'static {
     /// Get the processor name
     fn name(&self) -> &str;
 
+    /// First block to index. `None` lets the platform decide (chain default).
+    fn start_block(&self) -> Option<u64> {
+        None
+    }
+
+    /// Last block to index. `None` keeps following the chain head.
+    fn end_block(&self) -> Option<u64> {
+        None
+    }
+
     fn configure_event<T: EventMarker>(
         self,
         options: Option<OnEventOption>,
@@ -297,9 +307,15 @@ pub(crate) struct EthProcessorImpl {
 
 impl EthProcessorImpl {
     pub fn new(processor: Arc<dyn EthProcessor>) -> Self {
-        let options = EthBindOptions::new(processor.address())
+        let mut options = EthBindOptions::new(processor.address())
             .with_network(processor.chain_id().to_string())
             .with_name(processor.name().to_string());
+        if let Some(block) = processor.start_block() {
+            options = options.from_block(block);
+        }
+        if let Some(block) = processor.end_block() {
+            options = options.to_block(block);
+        }
 
         Self {
             options,

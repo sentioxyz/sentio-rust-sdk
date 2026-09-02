@@ -93,6 +93,21 @@ async fn token_metadata_is_written_once_per_token() {
 }
 
 #[tokio::test]
+async fn transfers_outside_the_column_range_keep_metrics_but_skip_the_row() {
+    let server = setup().await;
+    let eth = server.eth();
+
+    // ~1.9e73 raw with unknown decimals: exceeds Decimal256(30), the ERR320 case.
+    let junk = "19272561691502883147561569842966314044707217750399251012769692253235345185";
+    let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::TEST_ADDRESS_1, addresses::TEST_ADDRESS_2, junk);
+    let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
+
+    assert_eq!(result.counters.len(), 1, "counter still recorded");
+    assert_eq!(result.db.get_table_count("Token").await, 1, "token metadata still written");
+    assert_eq!(result.db.get_table_count("Transfer").await, 0, "row that would fail the binding is skipped");
+}
+
+#[tokio::test]
 async fn non_erc20_transfer_logs_are_skipped() {
     let server = setup().await;
     let eth = server.eth();

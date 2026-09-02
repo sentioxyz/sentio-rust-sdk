@@ -56,6 +56,24 @@ sol! {
     }
 }
 
+/// Scale of the platform's `BigDecimal!` column (ClickHouse `Decimal256(30)`).
+pub const BIGDECIMAL_SCALE: i64 = 30;
+
+/// Whether `v` fits the platform's `BigDecimal!` column: `Decimal256(30)` accepts
+/// |v| <= (10^76 - 1) / 10^30 (driver `check_value.go`). Junk tokens with absurd
+/// supplies exceed this and would fail the whole binding.
+pub fn fits_bigdecimal_column(v: &BigDecimal) -> bool {
+    use std::sync::OnceLock;
+    static MAX: OnceLock<BigDecimal> = OnceLock::new();
+    let max = MAX.get_or_init(|| BigDecimal::new(BigInt::from(10u32).pow(76u32) - 1, BIGDECIMAL_SCALE));
+    v.abs() <= *max
+}
+
+/// Whether `v` fits the platform's `BigInt!` column (Int256: [-2^255, 2^255 - 1]).
+pub fn fits_bigint_column(v: &BigInt) -> bool {
+    v.bits() <= 255 || (v.sign() == Sign::Minus && *v == -(BigInt::from(1u32) << 255u32))
+}
+
 /// Decode a `bytes32` symbol/name: UTF-8 padded with trailing NULs.
 pub fn bytes32_to_string(raw: alloy::primitives::FixedBytes<32>) -> String {
     String::from_utf8_lossy(raw.as_slice()).trim_end_matches('\0').to_string()
@@ -211,11 +229,15 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
 
         let value_raw = BigInt::from_bytes_be(Sign::Plus, &value.to_be_bytes::<32>());
         // decimals 0 also means "metadata unavailable", in which case the raw value stands.
-        let amount = if info.decimals > 0 {
+        let mut amount = if info.decimals > 0 {
             BigDecimal::new(value_raw.clone(), info.decimals as i64)
         } else {
             BigDecimal::from(value_raw.clone())
         };
+        // The column keeps 30 fractional digits; tokens with more decimals are rounded.
+        if amount.fractional_digit_count() > BIGDECIMAL_SCALE {
+            amount = amount.with_scale_round(BIGDECIMAL_SCALE, bigdecimal::RoundingMode::HalfEven);
+        }
 
         let labels: HashMap<String, String> = HashMap::from([
             ("chain".to_string(), self.chain_id.clone()),
@@ -228,6 +250,16 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
         }
         if let Err(e) = ctx.base_context().gauge("erc20_transfer_amount").record(amount.clone(), Some(labels)).await {
             warn!("failed to record erc20_transfer_amount: {}", e);
+        }
+
+        // Values the platform's columns cannot hold would fail the whole binding;
+        // keep the metrics but skip the row for such (invariably junk) tokens.
+        if !fits_bigdecimal_column(&amount) || !fits_bigint_column(&value_raw) {
+            warn!(
+                "skipping transfer {}:{} of {}: value {} exceeds the BigDecimal/BigInt column range",
+                ctx.transaction_hash(), ctx.log_index(), token, value_raw
+            );
+            return;
         }
 
         let transfer = TransferBuilder::default()
@@ -254,6 +286,25 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_range_guards_match_the_driver_limits() {
+        // 65 integer digits: the value from ERR320 in production.
+        let junk: BigDecimal = "19272561691502883147561569842966314044707217750399251012769692253.235345185".parse().unwrap();
+        assert!(!fits_bigdecimal_column(&junk));
+        // (10^76 - 1) / 10^30: 46 integer digits and 30 fractional digits, all nines.
+        let max: BigDecimal = format!("{}.{}", "9".repeat(46), "9".repeat(30)).parse().unwrap();
+        assert!(fits_bigdecimal_column(&max));
+        assert!(!fits_bigdecimal_column(&(max + BigDecimal::from(1u32))));
+        assert!(fits_bigdecimal_column(&"-1000000000000000000".parse().unwrap()));
+        assert!(!fits_bigdecimal_column(&"100000000000000000000000000000000000000000000000".parse().unwrap())); // 10^47
+
+        let two_pow_255 = BigInt::from(1u32) << 255u32;
+        assert!(fits_bigint_column(&(two_pow_255.clone() - 1)));
+        assert!(!fits_bigint_column(&two_pow_255));
+        assert!(fits_bigint_column(&-two_pow_255.clone()));
+        assert!(!fits_bigint_column(&BigInt::from_bytes_be(Sign::Plus, &U256::MAX.to_be_bytes::<32>())));
+    }
 
     #[test]
     fn bytes32_symbols_decode_without_padding() {

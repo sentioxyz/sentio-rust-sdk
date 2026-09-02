@@ -47,6 +47,18 @@ sol! {
         function symbol() external view returns (string);
         function name() external view returns (string);
     }
+
+    /// Pre-standard tokens (MKR, SAI, ...) return `bytes32` for symbol/name.
+    #[sol(rpc)]
+    interface IERC20Bytes32 {
+        function symbol() external view returns (bytes32);
+        function name() external view returns (bytes32);
+    }
+}
+
+/// Decode a `bytes32` symbol/name: UTF-8 padded with trailing NULs.
+pub fn bytes32_to_string(raw: alloy::primitives::FixedBytes<32>) -> String {
+    String::from_utf8_lossy(raw.as_slice()).trim_end_matches('\0').to_string()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,10 +109,24 @@ impl Erc20TransferProcessor {
 
     async fn fetch_token_info(&self, token: &str) -> anyhow::Result<TokenInfo> {
         let provider = self.rpc.as_ref().ok_or_else(|| anyhow::anyhow!("no RPC endpoint configured"))?;
-        let contract = IERC20::new(token.parse::<Address>()?, provider.clone());
+        let address = token.parse::<Address>()?;
+        let contract = IERC20::new(address, provider.clone());
         // Bind the call builders first: `call()` borrows them for the future's lifetime.
         let (decimals, symbol, name) = (contract.decimals(), contract.symbol(), contract.name());
-        let (decimals, symbol, name) = tokio::try_join!(decimals.call(), symbol.call(), name.call())?;
+        let (decimals, symbol, name) = tokio::join!(decimals.call(), symbol.call(), name.call());
+        // Without decimals there is no usable metadata at all.
+        let decimals = decimals?;
+
+        // `string` decoding fails on bytes32 tokens; retry with the legacy ABI.
+        let legacy = IERC20Bytes32::new(address, provider.clone());
+        let symbol = match symbol {
+            Ok(s) => s,
+            Err(_) => bytes32_to_string(legacy.symbol().call().await?),
+        };
+        let name = match name {
+            Ok(s) => s,
+            Err(_) => bytes32_to_string(legacy.name().call().await?),
+        };
         Ok(TokenInfo { decimals, symbol, name })
     }
 
@@ -222,5 +248,19 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
         if let Err(e) = ctx.store().upsert(&transfer).await {
             warn!("failed to save transfer {}: {}", transfer.id, e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytes32_symbols_decode_without_padding() {
+        // "MKR" as returned by 0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2
+        let raw: alloy::primitives::FixedBytes<32> =
+            "0x4d4b520000000000000000000000000000000000000000000000000000000000".parse().unwrap();
+        assert_eq!(bytes32_to_string(raw), "MKR");
+        assert_eq!(bytes32_to_string(alloy::primitives::FixedBytes::ZERO), "");
     }
 }

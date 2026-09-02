@@ -64,11 +64,7 @@ impl EthTestFacet {
         let raw_log = serde_json::to_string(log).unwrap_or_default();
         
         let eth_log = data::EthLog {
-            log: None, // Deprecated field
             timestamp: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
-            transaction: None, // Deprecated field
-            transaction_receipt: None, // Deprecated field
-            block: None, // Deprecated field
             raw_log,
             raw_transaction: None,
             raw_transaction_receipt: None,

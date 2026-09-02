@@ -3,7 +3,7 @@ use crate::testing::{TestEnvironment, EthTestFacet, MemoryDatabase, TestResult, 
 use crate::core::{AttributeValue, PluginManager, RuntimeContext};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use crate::{ConfigureHandlersResponse, DataBinding};
+use crate::{HandlerConfigs, DataBinding};
 use crate::entity::store::backend::Backend;
 use crate::eth::EthHandlerType;
 use crate::timeseries_result::TimeseriesType;
@@ -36,7 +36,7 @@ pub struct TestProcessorServer {
     
     /// Plugin manager for coordinating processors (public for facet access)
     pub(crate) plugin_manager: Arc<PluginManager>,
-    config: Option<ConfigureHandlersResponse>
+    config: Option<HandlerConfigs>
 }
 
 impl TestProcessorServer {
@@ -45,7 +45,8 @@ impl TestProcessorServer {
         
 
         let remote_backend = std::sync::Arc::new(Backend::memory(self.db.clone()));
-        let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend);
+        let runtime_context = RuntimeContext::new_with_empty_metadata(tx, 1, remote_backend)
+            .with_handler_type(data_binding.handler_type);
         
 
 
@@ -244,15 +245,12 @@ impl TestProcessorServer {
     }
 
     /// Get processor configuration for debugging
-    pub async fn get_config(&self) -> ConfigureHandlersResponse {
+    pub async fn get_config(&self) -> HandlerConfigs {
         if self.config.is_some() {
             return self.config.as_ref().unwrap().clone();
         }
         // Get the configuration from all registered plugins
-        let mut config_response = ConfigureHandlersResponse {
-            contract_configs: vec![],
-            account_configs: vec![],
-        };
+        let mut config_response = HandlerConfigs::default();
         
         // Get configuration from plugin manager
         self.plugin_manager.configure_all_plugins(&mut config_response);

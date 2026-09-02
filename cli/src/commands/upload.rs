@@ -465,7 +465,7 @@ impl UploadCommand {
 
         let payload = serde_json::json!({
             "project_slug": project,
-            "sdk_version": "2.0.0-development", // TODO: Get actual SDK version
+            "sdk_version": sentio_sdk::SENTIO_SDK_VERSION,
             "sequence": 0,
             "contentType": "application/zip"
         });
@@ -688,8 +688,8 @@ impl UploadCommand {
 
         let payload = serde_json::json!({
             "project_slug": project,
-            "cli_version": "2.0.0-development", // TODO: Get actual CLI version
-            "sdk_version": "2.0.0-development", // TODO: Get actual SDK version
+            "cli_version": env!("CARGO_PKG_VERSION"),
+            "sdk_version": sentio_sdk::SENTIO_SDK_VERSION,
             "sha256": sha256,
             "commit_sha": commit_sha,
             "git_url": git_url,

@@ -27,11 +27,12 @@ use tracing::{debug, warn};
 pub const TRANSFER_TOPIC: &str =
     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-/// Chains to track, as (chain id, start block). `start_block` is approximate on
-/// purpose — tune it per chain before uploading, a wildcard ERC20 processor from
-/// genesis is very expensive.
+/// Chains to track, as (chain id, start block). Ethereum is indexed from genesis;
+/// a wildcard ERC20 processor over a whole chain is expensive, so raise the start
+/// block (the commented entries are rough recent values) before uploading if you
+/// only need recent history.
 pub const CHAINS: &[(&str, u64)] = &[
-    ("1", 21_000_000), // Ethereum
+    ("1", 0), // Ethereum, from genesis
     // ("8453", 22_000_000),   // Base
     // ("42161", 270_000_000), // Arbitrum
     // ("10", 127_000_000),    // Optimism
@@ -56,22 +57,60 @@ sol! {
     }
 }
 
-/// Scale of the platform's `BigDecimal!` column (ClickHouse `Decimal256(30)`).
-pub const BIGDECIMAL_SCALE: i64 = 30;
-
-/// Whether `v` fits the platform's `BigDecimal!` column: `Decimal256(30)` accepts
-/// |v| <= (10^76 - 1) / 10^30 (driver `check_value.go`). Junk tokens with absurd
-/// supplies exceed this and would fail the whole binding.
-pub fn fits_bigdecimal_column(v: &BigDecimal) -> bool {
-    use std::sync::OnceLock;
-    static MAX: OnceLock<BigDecimal> = OnceLock::new();
-    let max = MAX.get_or_init(|| BigDecimal::new(BigInt::from(10u32).pow(76u32) - 1, BIGDECIMAL_SCALE));
-    v.abs() <= *max
+/// Storage limits of the platform's `BigDecimal!` / `BigInt!` columns. They depend
+/// on the project's entity schema version (project variable
+/// `SENTIO_ENTITY_SCHEMA_VERSION`, a bit set; driver `BuildFeatures`):
+/// bit 8 → BigDecimal is `Decimal512(60)` instead of `Decimal256(30)`,
+/// bit 4 → BigInt is `Int256` instead of the `[-2^256, 2^256-1]` tuple encoding.
+/// Values outside these ranges fail the whole binding (driver `check_value.go`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnLimits {
+    /// Fractional digits kept by the BigDecimal column
+    pub decimal_scale: i64,
+    /// Largest |value| the BigDecimal column accepts
+    pub decimal_max: BigDecimal,
+    /// BigInt column range (inclusive)
+    pub bigint_min: BigInt,
+    pub bigint_max: BigInt,
 }
 
-/// Whether `v` fits the platform's `BigInt!` column (Int256: [-2^255, 2^255 - 1]).
-pub fn fits_bigint_column(v: &BigInt) -> bool {
-    v.bits() <= 255 || (v.sign() == Sign::Minus && *v == -(BigInt::from(1u32) << 255u32))
+impl ColumnLimits {
+    pub fn for_schema_version(version: u32) -> Self {
+        let (precision, decimal_scale) = if version & 8 != 0 { (154u32, 60i64) } else { (76u32, 30i64) };
+        let decimal_max = BigDecimal::new(BigInt::from(10u32).pow(precision) - 1, decimal_scale);
+        let (bigint_min, bigint_max) = if version & 4 != 0 {
+            (-(BigInt::from(1u32) << 255u32), (BigInt::from(1u32) << 255u32) - 1)
+        } else {
+            (-(BigInt::from(1u32) << 256u32), (BigInt::from(1u32) << 256u32) - 1)
+        };
+        Self { decimal_scale, decimal_max, bigint_min, bigint_max }
+    }
+
+    /// Limits for this deployment: project variables reach the processor as env vars.
+    pub fn from_env() -> Self {
+        let version = std::env::var("SENTIO_ENTITY_SCHEMA_VERSION")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        Self::for_schema_version(version)
+    }
+
+    pub fn fits_bigdecimal(&self, v: &BigDecimal) -> bool {
+        v.abs() <= self.decimal_max
+    }
+
+    pub fn fits_bigint(&self, v: &BigInt) -> bool {
+        *v >= self.bigint_min && *v <= self.bigint_max
+    }
+
+    /// Round to the column's scale when the value carries more fractional digits.
+    pub fn round(&self, v: BigDecimal) -> BigDecimal {
+        if v.fractional_digit_count() > self.decimal_scale {
+            v.with_scale_round(self.decimal_scale, bigdecimal::RoundingMode::HalfEven)
+        } else {
+            v
+        }
+    }
 }
 
 /// Decode a `bytes32` symbol/name: UTF-8 padded with trailing NULs.
@@ -101,6 +140,7 @@ pub struct Erc20TransferProcessor {
     /// (chain, token) pairs whose Token row is already written, so metadata is read
     /// over RPC and upserted once per token instead of once per transfer.
     token_cache: Cache<String, TokenInfo>,
+    limits: ColumnLimits,
 }
 
 impl Erc20TransferProcessor {
@@ -118,7 +158,13 @@ impl Erc20TransferProcessor {
             name: format!("ERC20 transfers (chain {})", chain_id),
             rpc,
             token_cache: Cache::new(100_000),
+            limits: ColumnLimits::from_env(),
         }
+    }
+
+    pub fn with_column_limits(mut self, limits: ColumnLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     pub fn has_rpc(&self) -> bool {
@@ -229,15 +275,11 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
 
         let value_raw = BigInt::from_bytes_be(Sign::Plus, &value.to_be_bytes::<32>());
         // decimals 0 also means "metadata unavailable", in which case the raw value stands.
-        let mut amount = if info.decimals > 0 {
+        let amount = self.limits.round(if info.decimals > 0 {
             BigDecimal::new(value_raw.clone(), info.decimals as i64)
         } else {
             BigDecimal::from(value_raw.clone())
-        };
-        // The column keeps 30 fractional digits; tokens with more decimals are rounded.
-        if amount.fractional_digit_count() > BIGDECIMAL_SCALE {
-            amount = amount.with_scale_round(BIGDECIMAL_SCALE, bigdecimal::RoundingMode::HalfEven);
-        }
+        });
 
         let labels: HashMap<String, String> = HashMap::from([
             ("chain".to_string(), self.chain_id.clone()),
@@ -254,7 +296,7 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
 
         // Values the platform's columns cannot hold would fail the whole binding;
         // keep the metrics but skip the row for such (invariably junk) tokens.
-        if !fits_bigdecimal_column(&amount) || !fits_bigint_column(&value_raw) {
+        if !self.limits.fits_bigdecimal(&amount) || !self.limits.fits_bigint(&value_raw) {
             warn!(
                 "skipping transfer {}:{} of {}: value {} exceeds the BigDecimal/BigInt column range",
                 ctx.transaction_hash(), ctx.log_index(), token, value_raw
@@ -288,22 +330,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn column_range_guards_match_the_driver_limits() {
+    fn default_column_limits_match_decimal256_and_the_tuple_bigint() {
+        let limits = ColumnLimits::for_schema_version(0);
         // 65 integer digits: the value from ERR320 in production.
         let junk: BigDecimal = "19272561691502883147561569842966314044707217750399251012769692253.235345185".parse().unwrap();
-        assert!(!fits_bigdecimal_column(&junk));
+        assert!(!limits.fits_bigdecimal(&junk));
         // (10^76 - 1) / 10^30: 46 integer digits and 30 fractional digits, all nines.
         let max: BigDecimal = format!("{}.{}", "9".repeat(46), "9".repeat(30)).parse().unwrap();
-        assert!(fits_bigdecimal_column(&max));
-        assert!(!fits_bigdecimal_column(&(max + BigDecimal::from(1u32))));
-        assert!(fits_bigdecimal_column(&"-1000000000000000000".parse().unwrap()));
-        assert!(!fits_bigdecimal_column(&"100000000000000000000000000000000000000000000000".parse().unwrap())); // 10^47
+        assert!(limits.fits_bigdecimal(&max));
+        assert!(!limits.fits_bigdecimal(&(max + BigDecimal::from(1u32))));
+        assert!(limits.fits_bigdecimal(&"-1000000000000000000".parse().unwrap()));
 
+        // Without bit 4 the BigInt column holds [-2^256, 2^256-1]: any uint256 fits.
+        let u256_max = BigInt::from_bytes_be(Sign::Plus, &U256::MAX.to_be_bytes::<32>());
+        assert!(limits.fits_bigint(&u256_max));
+        assert!(!limits.fits_bigint(&(u256_max + 1)));
+        assert_eq!(limits.round("1.5".parse().unwrap()), "1.5".parse::<BigDecimal>().unwrap());
+        assert_eq!(limits.round(BigDecimal::new(BigInt::from(15u32), 31)).fractional_digit_count(), 30);
+    }
+
+    #[test]
+    fn schema_version_8_enables_decimal512_and_4_enables_int256() {
+        let v8 = ColumnLimits::for_schema_version(8);
+        let junk: BigDecimal = "19272561691502883147561569842966314044707217750399251012769692253.235345185".parse().unwrap();
+        assert!(v8.fits_bigdecimal(&junk), "Decimal512(60) holds 94 integer digits");
+        let max: BigDecimal = format!("{}.{}", "9".repeat(94), "9".repeat(60)).parse().unwrap();
+        assert!(v8.fits_bigdecimal(&max));
+        assert!(!v8.fits_bigdecimal(&(max + BigDecimal::from(1u32))));
+        assert_eq!(v8.decimal_scale, 60);
+
+        let v4 = ColumnLimits::for_schema_version(4);
         let two_pow_255 = BigInt::from(1u32) << 255u32;
-        assert!(fits_bigint_column(&(two_pow_255.clone() - 1)));
-        assert!(!fits_bigint_column(&two_pow_255));
-        assert!(fits_bigint_column(&-two_pow_255.clone()));
-        assert!(!fits_bigint_column(&BigInt::from_bytes_be(Sign::Plus, &U256::MAX.to_be_bytes::<32>())));
+        assert!(v4.fits_bigint(&(two_pow_255.clone() - 1)));
+        assert!(!v4.fits_bigint(&two_pow_255));
+        assert!(v4.fits_bigint(&-two_pow_255));
     }
 
     #[test]

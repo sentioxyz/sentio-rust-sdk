@@ -25,6 +25,9 @@ pub struct UploadCommand {
     pub silent_overwrite: bool,
     /// Workers (ports) the platform starts; the driver connects to port..port+n-1
     pub num_workers: Option<u32>,
+    /// Project variables (`KEY=VALUE`) saved right after init_upload, so they apply
+    /// to the processor version being created (e.g. SENTIO_ENTITY_SCHEMA_VERSION).
+    pub variables: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -339,6 +342,13 @@ impl UploadCommand {
                 println!("⚠️  Warning: {}", warning);
             }
 
+        // Save project variables before finish_upload: the server reads them (e.g.
+        // SENTIO_ENTITY_SCHEMA_VERSION) when it creates the processor record.
+        if !self.variables.is_empty() {
+            self.update_variables(config, auth_headers, &init_response.project_id)
+                .await?;
+        }
+
         // Upload the binary to the presigned URL with retry
         self.upload_with_retry(&init_response.url, &binary_data)
             .await?;
@@ -373,6 +383,43 @@ impl UploadCommand {
             config.host, full_project_name, finish_response.processor_id
         );
 
+        Ok(())
+    }
+
+    /// POST /api/v1/projects/{id}/variables with the `--variable KEY=VALUE` pairs.
+    async fn update_variables(
+        &self,
+        config: &ProjectConfig,
+        auth_headers: &HashMap<String, String>,
+        project_id: &str,
+    ) -> Result<()> {
+        let variables = self
+            .variables
+            .iter()
+            .map(|kv| {
+                let (key, value) = kv
+                    .split_once('=')
+                    .ok_or_else(|| anyhow!("invalid --variable '{}', expected KEY=VALUE", kv))?;
+                if key.trim().is_empty() || value.trim().is_empty() {
+                    return Err(anyhow!("invalid --variable '{}', key and value must be non-empty", kv));
+                }
+                Ok(serde_json::json!({ "key": key.trim(), "value": value.trim() }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let url = format!("{}/api/v1/projects/{}/variables", config.host, project_id);
+        let response = reqwest::Client::new()
+            .post(&url)
+            .headers(self.headers_to_reqwest(auth_headers)?)
+            .json(&serde_json::json!({ "projectId": project_id, "variables": variables }))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Failed to update project variables ({}): {}", status, body));
+        }
+        println!("✅ Project variables saved: {}", self.variables.join(", "));
         Ok(())
     }
 

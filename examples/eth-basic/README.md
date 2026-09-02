@@ -38,6 +38,23 @@ Other server flags: `--host`, `--debug`, `--process-binding-timeout`, `--worker 
 (listen on `n` consecutive ports; the platform passes this when the processor was
 uploaded with `--num-workers n`).
 
+## Uploading
+
+```bash
+cargo sentio upload --path examples/eth-basic --name <owner>/<project> \
+  --num-workers 8 --variable SENTIO_ENTITY_SCHEMA_VERSION=8
+```
+
+- `--num-workers n`: the platform starts the binary with `--worker=n` and the driver
+  spreads its streams over `n` ports.
+- `--variable KEY=VALUE`: project variables, saved before the processor version is
+  created and injected into the pod as env vars. `SENTIO_ENTITY_SCHEMA_VERSION` is a
+  bit set read by the platform when creating the version: bit 8 stores `BigDecimal!`
+  as `Decimal512(60)` (|v| < 10^94) instead of `Decimal256(30)` (|v| < 10^46), bit 4
+  stores `BigInt!` as `Int256`. The processor reads the same env var to size its
+  column-range guard (`ColumnLimits`); transfers that still don't fit are skipped
+  with a warning while their metrics are kept.
+
 ## Adding chains
 
 Uncomment or add entries in `CHAINS` (`src/processor.rs`). Start blocks are

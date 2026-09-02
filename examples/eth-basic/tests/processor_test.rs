@@ -4,7 +4,7 @@
 //! `unknown`/0 decimals exactly like the TypeScript processor's catch branch.
 
 use eth_basic::chains_config::ChainsConfig;
-use eth_basic::{decode_transfer, Erc20TransferProcessor, TransferEvent, CHAINS, TRANSFER_TOPIC};
+use eth_basic::{decode_transfer, ColumnLimits, Erc20TransferProcessor, TransferEvent, CHAINS, TRANSFER_TOPIC};
 use sentio_sdk::eth::eth_processor::EthProcessor;
 use sentio_sdk::testing::{addresses, chain_ids, mock_log, mock_transfer_log, TestProcessorServer};
 
@@ -105,6 +105,17 @@ async fn transfers_outside_the_column_range_keep_metrics_but_skip_the_row() {
     assert_eq!(result.counters.len(), 1, "counter still recorded");
     assert_eq!(result.db.get_table_count("Token").await, 1, "token metadata still written");
     assert_eq!(result.db.get_table_count("Transfer").await, 0, "row that would fail the binding is skipped");
+
+    // With SENTIO_ENTITY_SCHEMA_VERSION=8 (Decimal512) the same transfer is stored.
+    let mut wide = TestProcessorServer::new();
+    Erc20TransferProcessor::new("1", 0, &ChainsConfig::default())
+        .with_column_limits(ColumnLimits::for_schema_version(8))
+        .configure_event::<TransferEvent>(None)
+        .bind(&wide);
+    wide.start().await.expect("start test server");
+    let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::TEST_ADDRESS_1, addresses::TEST_ADDRESS_2, junk);
+    let result = wide.eth().test_log(log, Some(chain_ids::ETHEREUM)).await;
+    assert_eq!(result.db.get_table_count("Transfer").await, 1);
 }
 
 #[tokio::test]

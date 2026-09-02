@@ -64,6 +64,16 @@ async fn records_metrics_and_entities_for_a_transfer() {
 
     assert!(result.db.entity_exists("Token", &format!("1-{}", token)).await, "Token row keyed by chain-address");
     assert_eq!(result.db.get_table_count("Transfer").await, 1);
+
+    // The platform only accepts BigInt/BigDecimal columns in their dedicated encodings.
+    use sentio_sdk::common::rich_value::Value;
+    use sentio_sdk::entity::{BigDecimal, BigInt, FromRichValue};
+    let transfers = result.db.list_table_entities("Transfer").await;
+    let data = transfers[0].data.as_ref().expect("entity data");
+    assert!(matches!(data.fields["valueRaw"].value, Some(Value::BigintValue(_))), "{:?}", data.fields["valueRaw"]);
+    assert!(matches!(data.fields["value"].value, Some(Value::BigdecimalValue(_))), "{:?}", data.fields["value"]);
+    assert_eq!(BigInt::from_rich_value(&data.fields["valueRaw"]).unwrap().to_string(), ONE_TOKEN);
+    assert_eq!(BigDecimal::from_rich_value(&data.fields["value"]).unwrap().to_string(), ONE_TOKEN);
 }
 
 #[tokio::test]

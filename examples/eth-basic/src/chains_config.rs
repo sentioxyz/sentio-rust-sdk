@@ -18,6 +18,10 @@ pub struct ChainConfig {
     pub https: Vec<String>,
     #[serde(rename = "ChainServer", default)]
     pub chain_server: String,
+    /// Present in the driver's own chains config; accepted as a last resort in case
+    /// that file (rather than the SDK-facing one) is what reaches the processor.
+    #[serde(rename = "Endpoint", default)]
+    pub endpoint: String,
     #[serde(rename = "Rpc", default)]
     pub rpc: Option<RpcConfig>,
 }
@@ -41,12 +45,27 @@ impl ChainsConfig {
                 .or_else(|| (arg == "--chains-config").then(|| args.get(i + 1).cloned()).flatten())
         });
         match path {
-            Some(path) => Self::from_file(&path).unwrap_or_else(|e| {
-                eprintln!("failed to read chains config {}: {}", path, e);
+            Some(path) => match Self::from_file(&path) {
+                Ok(config) => {
+                    eprintln!("chains config {}: {} chain(s) {:?}", path, config.0.len(), config.chain_ids());
+                    config
+                }
+                Err(e) => {
+                    eprintln!("failed to read chains config {}: {}", path, e);
+                    Self::default()
+                }
+            },
+            None => {
+                eprintln!("no --chains-config argument given; RPC endpoints only via TEST_ENDPOINT_<chain>");
                 Self::default()
-            }),
-            None => Self::default(),
+            }
         }
+    }
+
+    pub fn chain_ids(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = self.0.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        ids
     }
 
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
@@ -55,7 +74,7 @@ impl ChainsConfig {
 
     /// RPC URL for a chain, in the order the v4 TypeScript runtime uses: an explicit
     /// `TEST_ENDPOINT_<chain>` env override, then `Rpc.Url`, then the first `Https`
-    /// entry, then the legacy `ChainServer`.
+    /// entry, then the legacy `ChainServer`, then the driver-side `Endpoint`.
     pub fn rpc_url(&self, chain_id: &str) -> Option<String> {
         if let Ok(url) = std::env::var(format!("TEST_ENDPOINT_{}", chain_id)) {
             return Some(url);
@@ -67,5 +86,6 @@ impl ChainsConfig {
             .filter(|url| !url.is_empty())
             .or_else(|| cfg.https.first().cloned())
             .or_else(|| (!cfg.chain_server.is_empty()).then(|| cfg.chain_server.clone()))
+            .or_else(|| (!cfg.endpoint.is_empty()).then(|| cfg.endpoint.clone()))
     }
 }

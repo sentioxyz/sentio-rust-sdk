@@ -50,9 +50,12 @@ impl TestProcessorServer {
         
 
 
-        match self.plugin_manager.process(data_binding, runtime_context).await {
+        match self.plugin_manager.process(data_binding, runtime_context.clone()).await {
             Ok(_process_result) => {
-                // Processing succeeded, collect any messages from the channel
+                // Push out any timeseries still buffered in the context, then collect
+                if let Err(e) = runtime_context.flush_timeseries().await {
+                    eprintln!("Error flushing timeseries: {}", e);
+                }
                 while let Ok(msg) = rx.try_recv() {
                     if let Ok(response) = msg {
                         self.collect_results_from_channel_response(response, test_result);

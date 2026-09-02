@@ -153,14 +153,22 @@ fn spawn_binding_processing(
 
         let result = match tokio::time::timeout(
             Duration::from_secs(timeout_secs),
-            plugin_manager.process(&binding, runtime_context),
+            plugin_manager.process(&binding, runtime_context.clone()),
         )
         .await
         {
-            Ok(Ok(result)) => {
-                debug!("Successfully processed binding for chain '{}'", binding.chain_id);
-                result
-            }
+            // Buffered timeseries must reach the driver before the `result` message;
+            // on failure they are dropped, like the TypeScript runtime does.
+            Ok(Ok(result)) => match runtime_context.flush_timeseries().await {
+                Ok(()) => {
+                    debug!("Successfully processed binding for chain '{}'", binding.chain_id);
+                    result
+                }
+                Err(e) => {
+                    error!("Failed to flush timeseries for chain '{}': {}", binding.chain_id, e);
+                    error_result(e.to_string())
+                }
+            },
             Ok(Err(e)) => {
                 error!("Failed to process binding for chain '{}': {}", binding.chain_id, e);
                 error_result(e.to_string())

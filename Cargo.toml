@@ -5,7 +5,6 @@ members = [
     "sdk",
     "examples/eth-basic",
     "examples/eth-decode-log",
-    "examples/bench",
 ]
 
 [workspace.package]

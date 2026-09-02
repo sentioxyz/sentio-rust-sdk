@@ -2,8 +2,8 @@
 //!
 //! Rust port of the TypeScript `erc20-transfer-multichain` processor: one wildcard
 //! (`address = "*"`) binding per chain receives every `Transfer` log on that chain,
-//! token metadata is read over RPC once per token, and each transfer records a
-//! counter, a gauge and `Token`/`Transfer` entities.
+//! token metadata is read over RPC once per token, and each transfer is stored as
+//! `Token`/`Transfer` entities (no metrics).
 
 use crate::chains_config::ChainsConfig;
 use crate::generated::entities::{TokenBuilder, TransferBuilder};
@@ -20,7 +20,6 @@ use sentio_sdk::eth::context::EthContext;
 use sentio_sdk::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
 use sentio_sdk::eth::{EthEventHandler, EventMarker, Log};
 use sentio_sdk::{async_trait, EntityStore};
-use std::collections::HashMap;
 use tracing::{debug, warn};
 
 /// keccak256("Transfer(address,address,uint256)")
@@ -265,7 +264,7 @@ pub fn decode_transfer(log: &Log) -> Option<(Address, Address, U256)> {
 
 #[async_trait]
 impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
-    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
+    async fn on_event(&self, event: EthEvent, ctx: EthContext) {
         let Some((from, to, value)) = decode_transfer(&event.log) else {
             debug!("skipping non-ERC20 Transfer log {}:{}", ctx.transaction_hash(), ctx.log_index());
             return;
@@ -281,21 +280,8 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
             BigDecimal::from(value_raw.clone())
         });
 
-        let labels: HashMap<String, String> = HashMap::from([
-            ("chain".to_string(), self.chain_id.clone()),
-            ("token".to_string(), token.clone()),
-            ("symbol".to_string(), info.symbol.clone()),
-        ]);
-        // `_count` is a reserved metric suffix on the backend (as are _sum _avg _min _max _last).
-        if let Err(e) = ctx.base_context().counter("erc20_transfers").add(1.0, Some(labels.clone())).await {
-            warn!("failed to record erc20_transfers: {}", e);
-        }
-        if let Err(e) = ctx.base_context().gauge("erc20_transfer_amount").record(amount.clone(), Some(labels)).await {
-            warn!("failed to record erc20_transfer_amount: {}", e);
-        }
-
         // Values the platform's columns cannot hold would fail the whole binding;
-        // keep the metrics but skip the row for such (invariably junk) tokens.
+        // skip the row for such (invariably junk) tokens.
         if !self.limits.fits_bigdecimal(&amount) || !self.limits.fits_bigint(&value_raw) {
             warn!(
                 "skipping transfer {}:{} of {}: value {} exceeds the BigDecimal/BigInt column range",

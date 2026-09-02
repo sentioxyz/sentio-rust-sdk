@@ -6,8 +6,6 @@ transfer:
 
 - reads the token's `decimals`/`symbol`/`name` over RPC **once per token** (LRU
   cached, 100k entries) and upserts a `Token` row keyed `chainId-address`;
-- records the `erc20_transfers` counter and the `erc20_transfer_amount` gauge,
-  labelled `chain`/`token`/`symbol`;
 - upserts an immutable `Transfer` row keyed `chainId-txHash-logIndex`, with the
   value scaled by `decimals` (raw when metadata is unavailable).
 
@@ -21,7 +19,7 @@ that don't index `from`/`to`) are skipped before any work is done.
 | `src/processor.rs` | `Erc20TransferProcessor`, the `CHAINS` list, transfer decoding |
 | `src/chains_config.rs` | reads the platform's `--chains-config=<json>` to find RPC endpoints |
 | `schema.graphql` | `Token` / `Transfer` entities (code generated into `src/generated/` by `build.rs`) |
-| `tests/processor_test.rs` | config shape, metrics, entities, skip logic |
+| `tests/processor_test.rs` | config shape, entities, skip logic |
 
 ## Running
 
@@ -53,7 +51,7 @@ cargo sentio upload --path examples/eth-basic --name <owner>/<project> \
   as `Decimal512(60)` (|v| < 10^94) instead of `Decimal256(30)` (|v| < 10^46), bit 4
   stores `BigInt!` as `Int256`. The processor reads the same env var to size its
   column-range guard (`ColumnLimits`); transfers that still don't fit are skipped
-  with a warning while their metrics are kept.
+  with a warning.
 
 ## Adding chains
 

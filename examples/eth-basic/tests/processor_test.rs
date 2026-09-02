@@ -43,7 +43,7 @@ async fn binds_a_wildcard_transfer_handler_per_chain() {
 }
 
 #[tokio::test]
-async fn records_metrics_and_entities_for_a_transfer() {
+async fn records_entities_for_a_transfer() {
     let server = setup().await;
     let eth = server.eth();
     let token = addresses::USDC_ETHEREUM.to_lowercase();
@@ -51,16 +51,7 @@ async fn records_metrics_and_entities_for_a_transfer() {
     let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::ZERO, addresses::TEST_ADDRESS_1, ONE_TOKEN);
     let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
 
-    let counter = result.counters.iter().find(|c| c.name == "erc20_transfers").expect("erc20_transfers counter");
-    assert_eq!(counter.value, 1.0);
-    assert_eq!(counter.labels["chain"], "1");
-    assert_eq!(counter.labels["token"], token);
-    assert_eq!(counter.labels["symbol"], "unknown");
-
-    // Without metadata the raw value stands (decimals 0), carried as an exact BigDecimal.
-    let gauge = result.gauges.iter().find(|g| g.name == "erc20_transfer_amount").expect("erc20_transfer_amount gauge");
-    assert_eq!(gauge.value, 1e18);
-    assert_eq!(gauge.labels["symbol"], "unknown");
+    assert!(result.counters.is_empty() && result.gauges.is_empty(), "entities only, no metrics");
 
     assert!(result.db.entity_exists("Token", &format!("1-{}", token)).await, "Token row keyed by chain-address");
     assert_eq!(result.db.get_table_count("Transfer").await, 1);
@@ -93,7 +84,7 @@ async fn token_metadata_is_written_once_per_token() {
 }
 
 #[tokio::test]
-async fn transfers_outside_the_column_range_keep_metrics_but_skip_the_row() {
+async fn transfers_outside_the_column_range_skip_the_row() {
     let server = setup().await;
     let eth = server.eth();
 
@@ -102,7 +93,6 @@ async fn transfers_outside_the_column_range_keep_metrics_but_skip_the_row() {
     let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::TEST_ADDRESS_1, addresses::TEST_ADDRESS_2, junk);
     let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
 
-    assert_eq!(result.counters.len(), 1, "counter still recorded");
     assert_eq!(result.db.get_table_count("Token").await, 1, "token metadata still written");
     assert_eq!(result.db.get_table_count("Transfer").await, 0, "row that would fail the binding is skipped");
 
@@ -127,8 +117,6 @@ async fn non_erc20_transfer_logs_are_skipped() {
     let log = mock_log(&[TRANSFER_TOPIC], "0x", TX_HASH, BLOCK_HASH, 1, 0);
     let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
 
-    assert!(result.counters.is_empty());
-    assert!(result.gauges.is_empty());
     assert_eq!(result.db.get_table_count("Transfer").await, 0);
     assert_eq!(result.db.get_table_count("Token").await, 0);
 }

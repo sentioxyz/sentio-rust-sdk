@@ -27,6 +27,13 @@ pub struct ServerArgs {
     #[arg(long, default_value = "600")]
     pub process_binding_timeout: u64,
 
+    /// Number of consecutive ports to listen on, starting at --port. The platform
+    /// starts a processor uploaded with N workers as `--worker=N` and the driver
+    /// connects to port..port+N-1 (the TypeScript runtime forks one process per
+    /// port). One multi-threaded Rust process serves all of them.
+    #[arg(long, default_value = "1")]
+    pub worker: u16,
+
     /// Port for profiling HTTP server
     #[cfg(feature = "profiling")]
     #[arg(long, default_value = "4040")]
@@ -144,9 +151,19 @@ impl Server {
 
         // execution_config will be constructed below before serving
 
-        let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+        let addrs = listen_ports(args.port, args.worker)
+            .into_iter()
+            .map(|port| format!("{}:{}", args.host, port).parse::<SocketAddr>())
+            .collect::<Result<Vec<_>, _>>()?;
 
-        info!("🚀 Starting Sentio Processor server on {}", addr);
+        match addrs.as_slice() {
+            [addr] => info!("🚀 Starting Sentio Processor server on {}", addr),
+            [first, .., last] => info!(
+                "🚀 Starting Sentio Processor server on {} .. {} ({} ports)",
+                first, last, addrs.len()
+            ),
+            [] => unreachable!("listen_ports always yields at least one port"),
+        }
         debug!("Server configuration: {:?}", args);
 
         #[cfg(feature = "profiling")]
@@ -206,22 +223,48 @@ impl Server {
             exec_cfg,
         );
 
-        let mut server = TonicProcessorV3Server::new(service)
-            .accept_compressed(tonic::codec::CompressionEncoding::Gzip);
-        if std::env::var("GRPC_ENABLE_COMPRESS").is_ok()
-            && std::env::var("GRPC_ENABLE_COMPRESS")? == "true"
-        {
-            server = server.send_compressed(tonic::codec::CompressionEncoding::Gzip);
-        }
+        let send_compressed =
+            matches!(std::env::var("GRPC_ENABLE_COMPRESS"), Ok(v) if v == "true");
 
-        TonicServer::builder()
-            .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
-            .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
-            .add_service(server)
-            .serve(addr)
-            .await?;
+        // Every port gets its own listener but they all share the same service
+        // (and thus the same plugins / processors) on this runtime.
+        let servers = addrs.into_iter().map(|addr| {
+            let mut server = TonicProcessorV3Server::new(service.clone())
+                .accept_compressed(tonic::codec::CompressionEncoding::Gzip);
+            if send_compressed {
+                server = server.send_compressed(tonic::codec::CompressionEncoding::Gzip);
+            }
+            TonicServer::builder()
+                .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
+                .http2_keepalive_timeout(Some(std::time::Duration::from_secs(10)))
+                .add_service(server)
+                .serve(addr)
+        });
+        futures::future::try_join_all(servers).await?;
 
         Ok(())
+    }
+}
+
+/// Ports served for `--port <base> --worker <n>`: `base..base+n-1`, clamped to the
+/// valid port range and never empty.
+pub fn listen_ports(base: u16, worker: u16) -> Vec<u16> {
+    let count = worker.max(1);
+    (0..count)
+        .map_while(|i| base.checked_add(i))
+        .collect()
+}
+
+#[cfg(test)]
+mod listen_ports_tests {
+    use super::listen_ports;
+
+    #[test]
+    fn worker_count_expands_to_consecutive_ports() {
+        assert_eq!(listen_ports(9999, 0), vec![9999]);
+        assert_eq!(listen_ports(9999, 1), vec![9999]);
+        assert_eq!(listen_ports(9999, 3), vec![9999, 10000, 10001]);
+        assert_eq!(listen_ports(65534, 4), vec![65534, 65535]);
     }
 }
 

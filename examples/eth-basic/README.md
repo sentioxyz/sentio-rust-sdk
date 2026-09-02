@@ -34,7 +34,9 @@ The Sentio platform passes `--chains-config` automatically. Locally you can also
 takes precedence over the file. Without any endpoint the processor still runs;
 token metadata is recorded as `unknown` with 0 decimals.
 
-Other server flags: `--host`, `--debug`, `--process-binding-timeout`.
+Other server flags: `--host`, `--debug`, `--process-binding-timeout`, `--worker <n>`
+(listen on `n` consecutive ports; the platform passes this when the processor was
+uploaded with `--num-workers n`).
 
 ## Adding chains
 

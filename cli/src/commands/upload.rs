@@ -23,6 +23,8 @@ pub struct UploadCommand {
     pub nobuild: bool,
     pub debug: bool,
     pub silent_overwrite: bool,
+    /// Workers (ports) the platform starts; the driver connects to port..port+n-1
+    pub num_workers: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -697,7 +699,8 @@ impl UploadCommand {
             "sequence": 0,
             "continueFrom": continue_from,
             "warnings": warnings,
-            "binary": true
+            "binary": true,
+            "numWorkers": self.num_workers.unwrap_or(1)
         });
 
         let response = client

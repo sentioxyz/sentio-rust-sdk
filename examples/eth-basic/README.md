@@ -1,102 +1,51 @@
-# Ethereum Basic Processor Example
+# Multichain ERC20 Transfer Processor
 
-This example demonstrates how to create a basic Ethereum processor using the Sentio SDK with the new synchronous ProcessorV3 API.
+Rust port of the TypeScript `erc20-transfer-multichain` processor. For every chain
+in `CHAINS` it binds a wildcard (`address = "*"`) ERC20 `Transfer` handler and, per
+transfer:
 
-## Key Features
+- reads the token's `decimals`/`symbol`/`name` over RPC **once per token** (LRU
+  cached, 100k entries) and upserts a `Token` row keyed `chainId-address`;
+- records the `erc20_transfers` counter and the `erc20_transfer_amount` gauge,
+  labelled `chain`/`token`/`symbol`;
+- upserts an immutable `Transfer` row keyed `chainId-txHash-logIndex`, with the
+  value scaled by `decimals` (raw when metadata is unavailable).
 
-- **No Tokio dependency required**: The server manages its own async runtime
-- **Command line argument support**: Built-in CLI for port and debug options
-- **Structured logging**: Automatic log setup based on debug flag
-- **ProcessorV3 implementation**: Uses the latest gRPC service definition
+Logs that share the `Transfer` topic but are not ERC20 transfers (ERC721, tokens
+that don't index `from`/`to`) are skipped before any work is done.
 
-## Command Line Arguments
+## Layout
 
-- `--port, -p <PORT>`: Port to listen on (default: 50051)
-- `--debug, -d`: Enable debug/verbose logging
-- `--host <HOST>`: Host address to bind to (default: 127.0.0.1)
-- `--help, -h`: Show help message
+| File | Purpose |
+|---|---|
+| `src/processor.rs` | `Erc20TransferProcessor`, the `CHAINS` list, transfer decoding |
+| `src/chains_config.rs` | reads the platform's `--chains-config=<json>` to find RPC endpoints |
+| `schema.graphql` | `Token` / `Transfer` entities (code generated into `src/generated/` by `build.rs`) |
+| `tests/processor_test.rs` | config shape, metrics, entities, skip logic |
 
-## Running Examples
+## Running
 
-### Basic Usage (default port 50051)
 ```bash
-cargo run --bin eth-basic
+cargo run --bin eth-basic -- --port 4000 --chains-config=/path/to/chains-config.json
 ```
 
-### Custom Port
+The Sentio platform passes `--chains-config` automatically. Locally you can also set
+`TEST_ENDPOINT_<chainId>` (e.g. `TEST_ENDPOINT_1=https://eth.llamarpc.com`), which
+takes precedence over the file. Without any endpoint the processor still runs;
+token metadata is recorded as `unknown` with 0 decimals.
+
+Other server flags: `--host`, `--debug`, `--process-binding-timeout`.
+
+## Adding chains
+
+Uncomment or add entries in `CHAINS` (`src/processor.rs`). Start blocks are
+deliberately approximate — a wildcard ERC20 processor from genesis is very
+expensive, so tune them per chain before uploading.
+
+## Tests
+
 ```bash
-cargo run --bin eth-basic -- --port 8080
+cargo test -p eth-basic
 ```
 
-### Debug Mode with Verbose Logging
-```bash
-cargo run --bin eth-basic -- --debug
-```
-
-### Custom Configuration
-```bash
-cargo run --bin eth-basic -- --host 0.0.0.0 --port 9090 --debug
-```
-
-## Code Structure
-
-- **Default Handler**: Uses the SDK's built-in ProcessorV3Handler implementation in Server
-- **Synchronous main()**: No `#[tokio::main]` needed - the server handles runtime creation
-- **Built-in CLI**: Automatic command line parsing and logging setup
-- **Ethereum focus**: Configured for Ethereum chain processing by default
-
-## Implementation Notes
-
-This example shows the simplest pattern for ProcessorV3 servers:
-
-1. **Minimal code**: Just `Server::new().start();`
-2. **No handler implementation**: Server implements ProcessorV3Handler by default
-3. **No async setup**: The SDK handles all async runtime management
-4. **No error handling**: The SDK logs errors and exits automatically
-5. **Built-in logging**: Automatic tracing setup based on CLI args
-6. **Zero boilerplate**: Focus on getting started quickly
-
-## Debug Logging
-
-When `--debug` is enabled, you'll see detailed logs including:
-- Line numbers and file locations
-- Client connection details
-- Request/response tracing
-- Internal processing steps
-
-## Next Steps
-
-For a production processor, you would implement a custom handler:
-
-```rust
-use sentio_sdk::{ProcessorV3Handler, Server};
-
-struct MyCustomProcessor;
-
-#[tonic::async_trait]
-impl ProcessorV3Handler for MyCustomProcessor {
-    // Implement init, configure_handlers, process_bindings_stream
-}
-
-fn main() -> Result<()> {
-    let server = Server::with_handler(MyCustomProcessor);
-    server.start()
-}
-```
-
-Key areas to customize:
-
-1. **Configure handlers**: Add specific contract configurations in `configure_handlers`
-2. **Implement streaming**: Process real blockchain data in `process_bindings_stream`  
-3. **Add business logic**: Generate metrics, events, and database updates
-4. **Error handling**: Robust error management and recovery
-5. **Testing**: Unit tests for your processor logic
-
-## Custom Handler Example
-
-The Server struct directly implements ProcessorV3Handler with default behavior that you can customize.
-
-## Related Documentation
-
-- [Sentio SDK Documentation](../../sdk/README.md)  
-- [Protocol Buffer Definitions](../../sdk/processor.proto)
+Tests run without RPC, so they exercise the "metadata unavailable" path.

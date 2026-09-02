@@ -112,9 +112,21 @@ impl TestProcessorServer {
             .map(|m| m.name.clone())
             .unwrap_or_default();
 
-        let labels = ts_result.metadata.as_ref()
+        // Base labels come from the metadata; per-call labels ride along in the data
+        // struct next to the reserved `value`/`add`/`name` fields.
+        let mut labels = ts_result.metadata.as_ref()
             .map(|m| m.labels.clone())
             .unwrap_or_default();
+        if let Some(ref data) = ts_result.data {
+            for (key, value) in &data.fields {
+                if matches!(key.as_str(), "value" | "add" | "name") {
+                    continue;
+                }
+                if let Some(crate::common::rich_value::Value::StringValue(s)) = &value.value {
+                    labels.entry(key.clone()).or_insert_with(|| s.clone());
+                }
+            }
+        }
 
         // Get the metric type from the `type` field
         let metric_type = TimeseriesType::try_from(ts_result.r#type)
@@ -128,6 +140,12 @@ impl TestProcessorServer {
                     Some(value_type) => match value_type {
                         crate::common::rich_value::Value::FloatValue(f) => Some(*f),
                         crate::common::rich_value::Value::IntValue(i) => Some(*i as f64),
+                        crate::common::rich_value::Value::BigdecimalValue(_) => {
+                            use crate::entity::FromRichValue;
+                            crate::entity::BigDecimal::from_rich_value(v)
+                                .ok()
+                                .and_then(|d| d.to_string().parse::<f64>().ok())
+                        }
                         _ => None,
                     },
                     None => None,

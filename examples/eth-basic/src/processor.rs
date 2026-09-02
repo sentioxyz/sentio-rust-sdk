@@ -1,38 +1,142 @@
+//! Multichain ERC20 transfer processor.
+//!
+//! Rust port of the TypeScript `erc20-transfer-multichain` processor: one wildcard
+//! (`address = "*"`) binding per chain receives every `Transfer` log on that chain,
+//! token metadata is read over RPC once per token, and each transfer records a
+//! counter, a gauge and `Token`/`Transfer` entities.
+
+use crate::chains_config::ChainsConfig;
+use crate::generated::entities::{TokenBuilder, TransferBuilder};
+use alloy::primitives::{Address, U256};
+use alloy::providers::RootProvider;
+use alloy::rpc::client::RpcClient;
+use alloy::sol;
+use bigdecimal::BigDecimal;
+use moka::sync::Cache;
+use num_bigint::{BigInt, Sign};
 use sentio_sdk::core::Context;
-use crate::generated::entities::TransferBuilder;
+use sentio_sdk::entity::ID;
 use sentio_sdk::eth::context::EthContext;
-use sentio_sdk::eth::eth_processor::*;
-use sentio_sdk::eth::{EthEventHandler, EventMarker};
+use sentio_sdk::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
+use sentio_sdk::eth::{EthEventHandler, EventMarker, Log};
 use sentio_sdk::{async_trait, EntityStore};
-use sentio_sdk::entity::{BigInt, BigDecimal, Timestamp, ID};
 use std::collections::HashMap;
+use tracing::{debug, warn};
 
-#[derive(Clone)]
-pub struct MyEthProcessor {
-    address: String,
-    chain_id: String,
-    name: String,
- }
+/// keccak256("Transfer(address,address,uint256)")
+pub const TRANSFER_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-impl Default for MyEthProcessor {
+/// Chains to track, as (chain id, start block). `start_block` is approximate on
+/// purpose — tune it per chain before uploading, a wildcard ERC20 processor from
+/// genesis is very expensive.
+pub const CHAINS: &[(&str, u64)] = &[
+    ("1", 21_000_000), // Ethereum
+    // ("8453", 22_000_000),   // Base
+    // ("42161", 270_000_000), // Arbitrum
+    // ("10", 127_000_000),    // Optimism
+    // ("137", 64_000_000),    // Polygon
+    // ("56", 43_000_000),     // BSC
+    // ("43114", 52_000_000),  // Avalanche
+];
+
+sol! {
+    #[sol(rpc)]
+    interface IERC20 {
+        function decimals() external view returns (uint8);
+        function symbol() external view returns (string);
+        function name() external view returns (string);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenInfo {
+    pub decimals: u8,
+    pub symbol: String,
+    pub name: String,
+}
+
+impl Default for TokenInfo {
+    /// What a token looks like when its metadata cannot be read.
     fn default() -> Self {
-        Self::new()
+        Self { decimals: 0, symbol: "unknown".to_string(), name: "unknown".to_string() }
     }
 }
 
-impl MyEthProcessor {
-    pub fn new() -> Self {
+pub struct Erc20TransferProcessor {
+    chain_id: String,
+    start_block: u64,
+    name: String,
+    rpc: Option<RootProvider>,
+    /// (chain, token) pairs whose Token row is already written, so metadata is read
+    /// over RPC and upserted once per token instead of once per transfer.
+    token_cache: Cache<String, TokenInfo>,
+}
+
+impl Erc20TransferProcessor {
+    pub fn new(chain_id: &str, start_block: u64, chains: &ChainsConfig) -> Self {
+        let rpc = chains.rpc_url(chain_id).and_then(|url| match url.parse() {
+            Ok(url) => Some(RootProvider::new(RpcClient::new_http(url))),
+            Err(e) => {
+                eprintln!("invalid RPC url for chain {}: {}", chain_id, e);
+                None
+            }
+        });
         Self {
-            address: "0x1234567890123456789012345678901234567890".to_string(),
-            chain_id: "1".to_string(),
-            name: "Sentio ETH + Entity Framework Demo".to_string(),
-         }
+            chain_id: chain_id.to_string(),
+            start_block,
+            name: format!("ERC20 transfers (chain {})", chain_id),
+            rpc,
+            token_cache: Cache::new(100_000),
+        }
+    }
+
+    pub fn has_rpc(&self) -> bool {
+        self.rpc.is_some()
+    }
+
+    async fn fetch_token_info(&self, token: &str) -> anyhow::Result<TokenInfo> {
+        let provider = self.rpc.as_ref().ok_or_else(|| anyhow::anyhow!("no RPC endpoint configured"))?;
+        let contract = IERC20::new(token.parse::<Address>()?, provider.clone());
+        // Bind the call builders first: `call()` borrows them for the future's lifetime.
+        let (decimals, symbol, name) = (contract.decimals(), contract.symbol(), contract.name());
+        let (decimals, symbol, name) = tokio::try_join!(decimals.call(), symbol.call(), name.call())?;
+        Ok(TokenInfo { decimals, symbol, name })
+    }
+
+    /// The wildcard binding makes the context address literally `"*"`, so the token
+    /// address has to come from the log itself.
+    async fn get_or_create_token(&self, ctx: &EthContext, token: &str) -> TokenInfo {
+        let id = format!("{}-{}", self.chain_id, token);
+        if let Some(info) = self.token_cache.get(&id) {
+            return info;
+        }
+
+        let info = self.fetch_token_info(token).await.unwrap_or_else(|e| {
+            warn!("failed to read token metadata for {} on {}: {}", token, self.chain_id, e);
+            TokenInfo::default()
+        });
+
+        let entity = TokenBuilder::default()
+            .id(ID::from(id.clone()))
+            .chain(self.chain_id.clone())
+            .address(token.to_string())
+            .symbol(info.symbol.clone())
+            .name(info.name.clone())
+            .decimals(info.decimals as i32)
+            .build()
+            .expect("Token entity");
+        match ctx.store().upsert(&entity).await {
+            Ok(()) => self.token_cache.insert(id, info.clone()),
+            Err(e) => warn!("failed to save token {}: {}", id, e),
+        }
+        info
     }
 }
 
-impl EthProcessor for MyEthProcessor {
+impl EthProcessor for Erc20TransferProcessor {
     fn address(&self) -> &str {
-        &self.address
+        "*"
     }
 
     fn chain_id(&self) -> &str {
@@ -42,181 +146,81 @@ impl EthProcessor for MyEthProcessor {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn start_block(&self) -> Option<u64> {
+        Some(self.start_block)
+    }
 }
 
-// Define different event marker types for the same processor
 pub struct TransferEvent;
-pub struct ApprovalEvent;
 
 impl EventMarker for TransferEvent {
     fn filter() -> Vec<EventFilter> {
-        vec![EventFilter {
-            address: None,
-            address_type: None,
-            topics: vec!["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef".to_string()], // Transfer event topic
-        }]
+        vec![EventFilter { address: None, address_type: None, topics: vec![TRANSFER_TOPIC.to_string()] }]
     }
 }
 
-impl EventMarker for ApprovalEvent {
-    fn filter() -> Vec<EventFilter> {
-        vec![EventFilter {
-            address: None,
-            address_type: None,
-            topics: vec!["0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925".to_string()], // Approval event topic
-        }]
+/// Decode an ERC20 `Transfer(address indexed from, address indexed to, uint256 value)`
+/// log. Returns `None` for logs that merely share the topic (ERC721 transfers index
+/// the token id as a fourth topic, some tokens omit indexing) — those are skipped,
+/// like `skipWhenDecodeFailed` does in the TypeScript processor.
+pub fn decode_transfer(log: &Log) -> Option<(Address, Address, U256)> {
+    let topics = log.topics();
+    let data = &log.data().data;
+    if topics.len() != 3 || data.len() != 32 {
+        return None;
     }
+    Some((Address::from_word(topics[1]), Address::from_word(topics[2]), U256::from_be_slice(data)))
 }
 
 #[async_trait]
-impl EthEventHandler<TransferEvent> for MyEthProcessor {
+impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
     async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
-        println!("🔄 Processing TRANSFER event from contract: {:?} on chain: {}",
-                 event.log.address(), ctx.chain_id());
-
-        println!("Transfer event details - Block: {}, Transaction: {:?}, Log Index: {}",
-                 event.log.block_number.unwrap_or_default(),
-                 event.log.transaction_hash,
-                 event.log.log_index.unwrap_or_default()
-        );
-
-        // Extract transfer data from event logs (simplified version)
-        let from_address = if event.log.topics().len() > 1 {
-            format!("0x{:x}", event.log.topics()[1])
-        } else {
-            "0x0000000000000000000000000000000000000000".to_string()
+        let Some((from, to, value)) = decode_transfer(&event.log) else {
+            debug!("skipping non-ERC20 Transfer log {}:{}", ctx.transaction_hash(), ctx.log_index());
+            return;
         };
-        
-        let to_address = if event.log.topics().len() > 2 {
-            format!("0x{:x}", event.log.topics()[2])
+        let token = alloy::hex::encode_prefixed(event.log.address());
+        let info = self.get_or_create_token(&ctx, &token).await;
+
+        let value_raw = BigInt::from_bytes_be(Sign::Plus, &value.to_be_bytes::<32>());
+        // decimals 0 also means "metadata unavailable", in which case the raw value stands.
+        let amount = if info.decimals > 0 {
+            BigDecimal::new(value_raw.clone(), info.decimals as i64)
         } else {
-            "0x0000000000000000000000000000000000000000".to_string()
+            BigDecimal::from(value_raw.clone())
         };
 
-        // Parse value from event data (simplified - real implementation would decode properly)
-        let value = if !event.log.data().data.is_empty() {
-            BigDecimal::from(event.log.data().data.len() as u64) // Placeholder calculation
-        } else {
-            BigDecimal::from(1000) // Default value
-        };
-
-        // Determine transfer type for categorization
-        let transfer_type = if from_address.ends_with("0000000000000000000000000000000000000000") {
-            "mint"
-        } else if to_address.ends_with("0000000000000000000000000000000000000000") {
-            "burn" 
-        } else {
-            "transfer"
-        };
-
-        // 📝 EVENT LOGGING: Record structured event data
-        let transfer_event = sentio_sdk::core::Event::name("Transfer")
-            .attr("contract", format!("{:?}", event.log.address()))
-            .attr("from", from_address.clone())
-            .attr("to", to_address.clone())
-            .attr("value", value.clone())
-            .attr("blockNumber", event.log.block_number.unwrap_or_default() as i64)
-            .attr("transactionHash", format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
-            .attr("type", transfer_type);
-
-        let event_logger = ctx.base_context().event_logger();
-        let _ = event_logger.emit(&transfer_event).await; // Use await and ignore result for now
-
-        // 📈 METRICS: Track counters and gauges
-        // Counter: Number of transfer events processed
-        let total_counter = ctx.base_context().counter("transfer_events_total");
-        let _ = total_counter.add(1.0, None).await;
-        
-        // Counter: Track transfers by type (mint, burn, normal transfer)
-        let type_counter = ctx.base_context().counter("transfers_by_type");
-        let mut type_labels = HashMap::new();
-        type_labels.insert("type".to_string(), transfer_type.to_string());
-        let _ = type_counter.add(1.0, Some(type_labels)).await;
-
-        // Gauge: Track current block number
-        let block_gauge = ctx.base_context().gauge("latest_block_processed");
-        let _ = block_gauge.record(event.log.block_number.unwrap_or_default() as f64, None).await;
-
-        // Gauge: Track transfer value (convert to f64 for gauge)
-        let value_f64 = value.to_string().parse::<f64>().unwrap_or(0.0);
-        let value_gauge = ctx.base_context().gauge("transfer_value");
-        let mut value_labels = HashMap::new();
-        value_labels.insert("type".to_string(), transfer_type.to_string());
-        let _ = value_gauge.record(value_f64, Some(value_labels)).await;
-
-        // 💾 ENTITY STORAGE: Create and store Transfer entity
-        let transfer_id = format!("{:?}-{}", 
-            event.log.transaction_hash.unwrap_or_default(), 
-            event.log.log_index.unwrap_or_default()
-        );
+        let labels: HashMap<String, String> = HashMap::from([
+            ("chain".to_string(), self.chain_id.clone()),
+            ("token".to_string(), token.clone()),
+            ("symbol".to_string(), info.symbol.clone()),
+        ]);
+        // `_count` is a reserved metric suffix on the backend (as are _sum _avg _min _max _last).
+        if let Err(e) = ctx.base_context().counter("erc20_transfers").add(1.0, Some(labels.clone())).await {
+            warn!("failed to record erc20_transfers: {}", e);
+        }
+        if let Err(e) = ctx.base_context().gauge("erc20_transfer_amount").record(amount.clone(), Some(labels)).await {
+            warn!("failed to record erc20_transfer_amount: {}", e);
+        }
 
         let transfer = TransferBuilder::default()
-            .id(ID::from(transfer_id))
-            .transaction_hash(format!("{:?}", event.log.transaction_hash.unwrap_or_default()))
-            .block_number(BigInt::from(event.log.block_number.unwrap_or_default()))
-            .log_index(event.log.log_index.unwrap_or_default() as i32)
-            .contract(format!("{:?}", event.log.address()))
-            .from(from_address)
-            .to(to_address)
-            .value(value)
-            .timestamp(Timestamp::from_timestamp_millis(ctx.block_number() as i64 * 15000).unwrap_or_default())
+            .id(ID::from(format!("{}-{}-{}", self.chain_id, ctx.transaction_hash(), ctx.log_index())))
+            .chain(self.chain_id.clone())
+            .token_id(ID::from(format!("{}-{}", self.chain_id, token)))
+            .token_address(token)
+            .from(alloy::hex::encode_prefixed(from))
+            .to(alloy::hex::encode_prefixed(to))
+            .value(amount)
+            .value_raw(value_raw)
+            .block_number(ctx.block_number() as i32)
+            .timestamp(ctx.timestamp())
+            .tx_hash(ctx.transaction_hash())
+            .log_index(ctx.log_index())
             .build()
-            .expect("Failed to build transfer entity");
-
-        // Save entity to store
-        ctx.store().upsert(&transfer).await.expect("Failed to save transfer entity");
-        println!("💾 Saved Transfer entity with ID: {}", transfer.id);
-
-        println!("✅ Transfer event processing completed");
-     }
-}
-
-#[async_trait]
-impl EthEventHandler<ApprovalEvent> for MyEthProcessor {
-    async fn on_event(&self, event: EthEvent, mut ctx: EthContext) {
-        println!("🔄 Processing APPROVAL event from contract: {:?} on chain: {}",
-                 event.log.address(), ctx.chain_id());
-
-        // Extract approval data from event logs
-        let owner_address = if event.log.topics().len() > 1 {
-            format!("0x{:x}", event.log.topics()[1])
-        } else {
-            "0x0000000000000000000000000000000000000000".to_string()
-        };
-        
-        let spender_address = if event.log.topics().len() > 2 {
-            format!("0x{:x}", event.log.topics()[2])
-        } else {
-            "0x0000000000000000000000000000000000000000".to_string()
-        };
-
-        let allowance_value = if !event.log.data().data.is_empty() {
-            BigDecimal::from(event.log.data().data.len() as u64)
-        } else {
-            BigDecimal::from(0)
-        };
-
-        // 📝 EVENT LOGGING: Record structured event data for approval
-        let approval_event = sentio_sdk::core::Event::name("Approval")
-            .attr("contract", format!("{:?}", event.log.address()))
-            .attr("owner", owner_address.clone())
-            .attr("spender", spender_address.clone())
-            .attr("value", allowance_value.clone())
-            .attr("blockNumber", event.log.block_number.unwrap_or_default() as i64);
-
-        let event_logger = ctx.base_context().event_logger();
-        let _ = event_logger.emit(&approval_event).await;
-
-        // 📈 METRICS: Track approval-related metrics
-        let approval_counter = ctx.base_context().counter("approval_events_total");
-        let _ = approval_counter.add(1.0, None).await;
-            
-        // Track approval values
-        let allowance_f64 = allowance_value.to_string().parse::<f64>().unwrap_or(0.0);
-        let approval_gauge = ctx.base_context().gauge("approval_value");
-        let _ = approval_gauge.record(allowance_f64, None).await;
-
-        println!("✅ Approval event processing completed - Owner: {}, Spender: {}, Value: {}", 
-                owner_address, spender_address, allowance_value);
+            .expect("Transfer entity");
+        if let Err(e) = ctx.store().upsert(&transfer).await {
+            warn!("failed to save transfer {}: {}", transfer.id, e);
+        }
     }
 }

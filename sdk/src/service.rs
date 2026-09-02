@@ -226,6 +226,40 @@ mod tests {
         assert!(db_schema.gql_schema.contains("TestEntity"));
     }
 
+    #[tokio::test]
+    async fn get_config_is_idempotent_across_calls() {
+        use crate::eth::eth_processor::{EthEvent, EthProcessor, EventFilter};
+        use crate::eth::{EthEventHandler, EventMarker};
+
+        struct P;
+        impl EthProcessor for P {
+            fn address(&self) -> &str { "*" }
+            fn chain_id(&self) -> &str { "1" }
+            fn name(&self) -> &str { "p" }
+        }
+        struct Transfer;
+        impl EventMarker for Transfer {
+            fn filter() -> Vec<EventFilter> {
+                vec![EventFilter { address: None, address_type: None, topics: vec!["0xdd".to_string()] }]
+            }
+        }
+        #[crate::async_trait]
+        impl EthEventHandler<Transfer> for P {
+            async fn on_event(&self, _: EthEvent, _: crate::eth::context::EthContext) {}
+        }
+
+        let service = ProcessorService::new();
+        let mut processor_impl = crate::eth::eth_processor::EthProcessorImpl::new(std::sync::Arc::new(P));
+        processor_impl.add_event_handler(P, None);
+        service.register_processor::<_, crate::EthPlugin>(processor_impl);
+
+        // The driver calls GetConfig once per connection (N workers) and rejects any diff.
+        let first = service.get_config(Request::new(ProcessConfigRequest {})).await.unwrap().into_inner();
+        let second = service.get_config(Request::new(ProcessConfigRequest {})).await.unwrap().into_inner();
+        assert_eq!(first, second);
+        assert_eq!(first.contract_configs[0].log_configs[0].handler_id, 0);
+    }
+
     #[test]
     fn default_partitions_cover_every_handler() {
         use crate::processor::process_stream_response::partitions::partition;

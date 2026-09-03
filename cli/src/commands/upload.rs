@@ -98,22 +98,24 @@ impl Command for UploadCommand {
         // Set up authentication
         let auth_headers = self.setup_authentication(&config).await?;
 
-        // Try to find binary file first
-        let binary_path = match self.try_find_binary_file() {
-            Ok(path) => {
-                println!("Found existing binary: {}", path);
-                path
-            }
-            Err(_) => {
-                // Binary not found, build if needed and allowed
-                if config.build && !self.nobuild {
-                    println!("Binary not found, building processor...");
-                    self.build_processor().await?;
-
-                    // Now find the binary that should have been created
-                    self.find_binary_file()?
-                } else {
-                    return Err(anyhow!("Binary not found and building is disabled (use --nobuild=false or ensure binary exists)"));
+        // Always build unless told not to: an existing binary may predate the current
+        // sources (this once shipped a stale processor as a new version), and Cargo
+        // already tracks staleness across the crate and its path dependencies, so an
+        // up-to-date build costs a few seconds.
+        let binary_path = if config.build && !self.nobuild {
+            println!("Building processor...");
+            self.build_processor().await?;
+            self.find_binary_file()?
+        } else {
+            match self.try_find_binary_file() {
+                Ok(path) => {
+                    println!("Build skipped, uploading existing binary: {}", path);
+                    path
+                }
+                Err(_) => {
+                    return Err(anyhow!(
+                        "Binary not found and building is disabled (drop --nobuild / set build: true, or build first)"
+                    ));
                 }
             }
         };

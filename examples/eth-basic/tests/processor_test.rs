@@ -1,10 +1,10 @@
 //! Integration tests for the multichain ERC20 transfer processor.
 //!
-//! No RPC endpoint is configured here, so token metadata falls back to
-//! `unknown`/0 decimals exactly like the TypeScript processor's catch branch.
+//! The processor makes no RPC calls and writes no entities: every ERC20 `Transfer`
+//! log becomes one `Transfer` event log carrying the token address from the log.
 
-use eth_basic::chains_config::ChainsConfig;
-use eth_basic::{decode_transfer, ColumnLimits, Erc20TransferProcessor, TransferEvent, CHAINS, TRANSFER_TOPIC};
+use eth_basic::{decode_transfer, Erc20TransferProcessor, TransferEvent, CHAINS, TRANSFER_EVENT, TRANSFER_TOPIC};
+use sentio_sdk::core::AttributeValue;
 use sentio_sdk::eth::eth_processor::EthProcessor;
 use sentio_sdk::testing::{addresses, chain_ids, mock_log, mock_transfer_log, TestProcessorServer};
 
@@ -14,14 +14,20 @@ const BLOCK_HASH: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 async fn setup() -> TestProcessorServer {
     let mut server = TestProcessorServer::new();
-    let chains = ChainsConfig::default();
     for (chain_id, start_block) in CHAINS {
-        Erc20TransferProcessor::new(chain_id, *start_block, &chains)
+        Erc20TransferProcessor::new(chain_id, *start_block)
             .configure_event::<TransferEvent>(None)
             .bind(&server);
     }
     server.start().await.expect("start test server");
     server
+}
+
+fn string_attr(attrs: &std::collections::HashMap<String, AttributeValue>, key: &str) -> String {
+    match attrs.get(key) {
+        Some(AttributeValue::String(s)) => s.clone(),
+        other => panic!("attribute {} should be a string, got {:?}", key, other),
+    }
 }
 
 #[tokio::test]
@@ -43,32 +49,36 @@ async fn binds_a_wildcard_transfer_handler_per_chain() {
 }
 
 #[tokio::test]
-async fn records_entities_for_a_transfer() {
+async fn emits_one_event_log_per_transfer() {
     let server = setup().await;
     let eth = server.eth();
-    let token = addresses::USDC_ETHEREUM.to_lowercase();
 
     let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::ZERO, addresses::TEST_ADDRESS_1, ONE_TOKEN);
     let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
 
-    assert!(result.counters.is_empty() && result.gauges.is_empty(), "entities only, no metrics");
+    assert!(result.counters.is_empty() && result.gauges.is_empty(), "event logs only, no metrics");
+    assert_eq!(result.db.get_table_count("Transfer").await, 0, "no entity rows");
+    assert_eq!(result.db.get_table_count("Token").await, 0, "no token metadata rows");
 
-    assert!(result.db.entity_exists("Token", &format!("1-{}", token)).await, "Token row keyed by chain-address");
-    assert_eq!(result.db.get_table_count("Transfer").await, 1);
-
-    // The platform only accepts BigInt/BigDecimal columns in their dedicated encodings.
-    use sentio_sdk::common::rich_value::Value;
-    use sentio_sdk::entity::{BigDecimal, BigInt, FromRichValue};
-    let transfers = result.db.list_table_entities("Transfer").await;
-    let data = transfers[0].data.as_ref().expect("entity data");
-    assert!(matches!(data.fields["valueRaw"].value, Some(Value::BigintValue(_))), "{:?}", data.fields["valueRaw"]);
-    assert!(matches!(data.fields["value"].value, Some(Value::BigdecimalValue(_))), "{:?}", data.fields["value"]);
-    assert_eq!(BigInt::from_rich_value(&data.fields["valueRaw"]).unwrap().to_string(), ONE_TOKEN);
-    assert_eq!(BigDecimal::from_rich_value(&data.fields["value"]).unwrap().to_string(), ONE_TOKEN);
+    assert_eq!(result.events.len(), 1);
+    let event = &result.events[0];
+    assert_eq!(event.name, TRANSFER_EVENT);
+    let attrs = &event.attributes;
+    assert_eq!(string_attr(attrs, "token"), addresses::USDC_ETHEREUM.to_lowercase(), "token address taken from the log");
+    assert_eq!(string_attr(attrs, "from"), addresses::ZERO.to_lowercase());
+    assert_eq!(string_attr(attrs, "to"), addresses::TEST_ADDRESS_1.to_lowercase());
+    assert_eq!(string_attr(attrs, "chain"), chain_ids::ETHEREUM.to_string());
+    match attrs.get("value") {
+        Some(AttributeValue::BigInt(v)) => assert_eq!(v.to_string(), ONE_TOKEN),
+        other => panic!("value should be a BigInt attribute, got {:?}", other),
+    }
+    assert!(matches!(attrs.get("block_number"), Some(AttributeValue::Integer(_))));
+    assert!(matches!(attrs.get("log_index"), Some(AttributeValue::Integer(_))));
+    assert!(attrs.contains_key("tx_hash"));
 }
 
 #[tokio::test]
-async fn token_metadata_is_written_once_per_token() {
+async fn every_transfer_is_its_own_event() {
     let server = setup().await;
     let eth = server.eth();
 
@@ -76,36 +86,26 @@ async fn token_metadata_is_written_once_per_token() {
     let mut second = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::TEST_ADDRESS_1, addresses::TEST_ADDRESS_2, ONE_TOKEN);
     second.log_index = Some(2);
 
-    eth.test_log(first, Some(chain_ids::ETHEREUM)).await;
-    let result = eth.test_log(second, Some(chain_ids::ETHEREUM)).await;
-
-    assert_eq!(result.db.get_table_count("Token").await, 1, "same token -> one Token row");
-    assert_eq!(result.db.get_table_count("Transfer").await, 2, "distinct log index -> two Transfer rows");
+    assert_eq!(eth.test_log(first, Some(chain_ids::ETHEREUM)).await.events.len(), 1);
+    assert_eq!(eth.test_log(second, Some(chain_ids::ETHEREUM)).await.events.len(), 1, "same token still emits");
 }
 
 #[tokio::test]
-async fn transfers_outside_the_column_range_skip_the_row() {
+async fn huge_values_are_recorded_raw() {
     let server = setup().await;
     let eth = server.eth();
 
-    // ~1.9e73 raw with unknown decimals: exceeds Decimal256(30), the ERR320 case.
+    // ~1.9e73 raw: used to overflow the Decimal256 entity column; as a BigInt event
+    // attribute it is stored as-is.
     let junk = "19272561691502883147561569842966314044707217750399251012769692253235345185";
     let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::TEST_ADDRESS_1, addresses::TEST_ADDRESS_2, junk);
     let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
 
-    assert_eq!(result.db.get_table_count("Token").await, 1, "token metadata still written");
-    assert_eq!(result.db.get_table_count("Transfer").await, 0, "row that would fail the binding is skipped");
-
-    // With SENTIO_ENTITY_SCHEMA_VERSION=8 (Decimal512) the same transfer is stored.
-    let mut wide = TestProcessorServer::new();
-    Erc20TransferProcessor::new("1", 0, &ChainsConfig::default())
-        .with_column_limits(ColumnLimits::for_schema_version(8))
-        .configure_event::<TransferEvent>(None)
-        .bind(&wide);
-    wide.start().await.expect("start test server");
-    let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::TEST_ADDRESS_1, addresses::TEST_ADDRESS_2, junk);
-    let result = wide.eth().test_log(log, Some(chain_ids::ETHEREUM)).await;
-    assert_eq!(result.db.get_table_count("Transfer").await, 1);
+    assert_eq!(result.events.len(), 1);
+    match result.events[0].attributes.get("value") {
+        Some(AttributeValue::BigInt(v)) => assert_eq!(v.to_string(), junk),
+        other => panic!("value should be a BigInt attribute, got {:?}", other),
+    }
 }
 
 #[tokio::test]
@@ -117,8 +117,7 @@ async fn non_erc20_transfer_logs_are_skipped() {
     let log = mock_log(&[TRANSFER_TOPIC], "0x", TX_HASH, BLOCK_HASH, 1, 0);
     let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
 
-    assert_eq!(result.db.get_table_count("Transfer").await, 0);
-    assert_eq!(result.db.get_table_count("Token").await, 0);
+    assert!(result.events.is_empty());
 }
 
 #[test]

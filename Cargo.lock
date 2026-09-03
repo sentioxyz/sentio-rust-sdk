@@ -347,7 +347,6 @@ dependencies = [
  "alloy-signer",
  "alloy-sol-types",
  "alloy-transport",
- "alloy-transport-http",
  "async-stream",
  "async-trait",
  "auto_impl",
@@ -358,13 +357,11 @@ dependencies = [
  "lru",
  "parking_lot",
  "pin-project",
- "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.16",
  "tokio",
  "tracing",
- "url",
  "wasmtimer",
 ]
 
@@ -399,17 +396,14 @@ dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
  "alloy-transport",
- "alloy-transport-http",
  "futures",
  "pin-project",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tower",
  "tracing",
- "url",
  "wasmtimer",
 ]
 
@@ -602,12 +596,7 @@ version = "1.0.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2379d998f46d422ec8ef2b61603bc28cda931e5e267aea1ebe71f62da61d101"
 dependencies = [
- "alloy-json-rpc",
  "alloy-transport",
- "reqwest",
- "serde_json",
- "tower",
- "tracing",
  "url",
 ]
 
@@ -1890,15 +1879,8 @@ name = "eth-basic"
 version = "0.1.0"
 dependencies = [
  "alloy",
- "anyhow",
- "bigdecimal",
- "derive_builder",
- "moka",
  "num-bigint",
- "sentio-cli",
  "sentio-sdk",
- "serde",
- "serde_json",
  "tokio",
  "tracing",
 ]
@@ -1912,15 +1894,12 @@ dependencies = [
  "derive_builder",
  "hex",
  "moka",
- "prost-types",
  "reqwest",
  "sentio-cli",
  "sentio-sdk",
  "serde",
  "serde_json",
  "tokio",
- "tokio-stream",
- "tonic",
  "tracing",
 ]
 

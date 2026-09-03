@@ -8,7 +8,8 @@ For every chain in `CHAINS` this processor binds a wildcard (`address = "*"`) ER
 | `chain` | chain id |
 | `token` | the emitting contract, i.e. the token address, straight from the log |
 | `from`, `to` | decoded indexed topics |
-| `value` | raw `uint256` amount as `BigInt` (no `decimals` scaling) |
+| `value` | raw `uint256` amount as `BigInt` (no `decimals` scaling); only when it fits `Int256` |
+| `value_str` | the raw amount as text, only for the rare amounts ≥ 2^255 that `Int256` cannot hold |
 | `block_number`, `tx_hash`, `log_index` | log position |
 
 The distinct id is `chainId-txHash-logIndex`.

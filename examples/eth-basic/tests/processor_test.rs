@@ -3,7 +3,7 @@
 //! The processor makes no RPC calls and writes no entities: every ERC20 `Transfer`
 //! log becomes one `Transfer` event log carrying the token address from the log.
 
-use eth_basic::{decode_transfer, Erc20TransferProcessor, TransferEvent, CHAINS, TRANSFER_EVENT, TRANSFER_TOPIC};
+use eth_basic::{decode_transfer, fits_int256, Erc20TransferProcessor, TransferEvent, CHAINS, TRANSFER_EVENT, TRANSFER_TOPIC};
 use sentio_sdk::core::AttributeValue;
 use sentio_sdk::eth::eth_processor::EthProcessor;
 use sentio_sdk::testing::{addresses, chain_ids, mock_log, mock_transfer_log, TestProcessorServer};
@@ -106,6 +106,33 @@ async fn huge_values_are_recorded_raw() {
         Some(AttributeValue::BigInt(v)) => assert_eq!(v.to_string(), junk),
         other => panic!("value should be a BigInt attribute, got {:?}", other),
     }
+}
+
+#[tokio::test]
+async fn values_beyond_int256_are_kept_as_text() {
+    let server = setup().await;
+    let eth = server.eth();
+
+    // 2^256 - 1000: the ERR321 value. Int256 tops out at 2^255 - 1, so it cannot be a
+    // BigInt attribute without failing the binding.
+    let huge = "115792089237316195423570985008687907853269984665640564039457584007913129638936";
+    let log = mock_transfer_log(addresses::USDC_ETHEREUM, addresses::TEST_ADDRESS_1, addresses::TEST_ADDRESS_2, huge);
+    let result = eth.test_log(log, Some(chain_ids::ETHEREUM)).await;
+
+    assert_eq!(result.events.len(), 1, "the transfer is still recorded");
+    let attrs = &result.events[0].attributes;
+    assert!(!attrs.contains_key("value"), "no Int256-typed value for an out-of-range amount");
+    assert_eq!(string_attr(attrs, "value_str"), huge);
+}
+
+#[test]
+fn int256_bound_is_exclusive_at_two_pow_255() {
+    use num_bigint::BigInt;
+    let two_pow_255 = BigInt::from(1u8) << 255u32;
+    assert!(fits_int256(&(two_pow_255.clone() - 1)));
+    assert!(!fits_int256(&two_pow_255));
+    assert!(fits_int256(&-two_pow_255.clone()));
+    assert!(!fits_int256(&(-two_pow_255 - 1)));
 }
 
 #[tokio::test]

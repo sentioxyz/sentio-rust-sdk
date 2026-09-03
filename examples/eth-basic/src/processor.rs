@@ -78,6 +78,12 @@ impl EventMarker for TransferEvent {
     }
 }
 
+/// Whether `v` fits the platform's `Int256` column for BigInt attributes.
+pub fn fits_int256(v: &BigInt) -> bool {
+    let bound = BigInt::from(1u8) << 255u32;
+    *v >= -bound.clone() && *v < bound
+}
+
 /// Decode an ERC20 `Transfer(address indexed from, address indexed to, uint256 value)`
 /// log. Returns `None` for logs that merely share the topic (ERC721 transfers index
 /// the token id as a fourth topic, some tokens omit indexing) — those are skipped,
@@ -104,14 +110,21 @@ impl EthEventHandler<TransferEvent> for Erc20TransferProcessor {
         // Raw token units: without `decimals` there is nothing to scale by.
         let value = BigInt::from_bytes_be(Sign::Plus, &value.to_be_bytes::<32>());
 
-        let transfer = Event::name(TRANSFER_EVENT)
+        let mut transfer = Event::name(TRANSFER_EVENT)
             // One id per log keeps the event unique across chains.
             .distinct_id(&format!("{}-{}-{}", self.chain_id, ctx.transaction_hash(), ctx.log_index()))
             .attr("chain", self.chain_id.clone())
             .attr("token", token)
             .attr("from", from)
-            .attr("to", to)
-            .attr("value", value)
+            .attr("to", to);
+        // The platform stores BigInt attributes as Int256; a uint256 above 2^255-1
+        // (junk tokens, ERR321) would fail the whole binding, so keep those as text.
+        transfer = if fits_int256(&value) {
+            transfer.attr("value", value)
+        } else {
+            transfer.attr("value_str", value.to_string())
+        };
+        let transfer = transfer
             .attr("block_number", ctx.block_number() as i64)
             .attr("tx_hash", ctx.transaction_hash())
             .attr("log_index", ctx.log_index() as i64);
